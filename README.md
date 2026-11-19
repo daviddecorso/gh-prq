@@ -2,6 +2,9 @@
 
 Turn-based pull request queue for the GitHub CLI. Answers "whose turn is it?" for every open PR you're involved in.
 
+<img width="1077" height="331" alt="image" src="https://github.com/user-attachments/assets/d40dfb4e-5464-4acc-8e0e-66118b081469" />
+
+
 ## Develop
 
 Requires Node 22.18+ (runs the TypeScript directly, no build step).
