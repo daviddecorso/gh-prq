@@ -92,6 +92,7 @@ export function classifyPR(
     reason: reasons[0]!,
     allReasons: reasons,
     ciState: pr.ciState,
+    failedChecks: pr.failedChecks,
     additions: pr.additions,
     deletions: pr.deletions,
     headOid: pr.headOid,

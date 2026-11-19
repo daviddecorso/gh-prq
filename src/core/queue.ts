@@ -18,22 +18,49 @@ function compareItems(a: ClassifiedPR, b: ClassifiedPR): number {
   return Date.parse(b.actionSince) - Date.parse(a.actionSince);
 }
 
+/** Case-insensitive globs; a pattern without `/` matches the repo name under any owner. */
+export function repoMatcher(patterns: string[]): (repo: string) => boolean {
+  const regexes = patterns.map((pattern) => {
+    const source = pattern.split("*").map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*");
+    return { regex: new RegExp(`^${source}$`, "i"), wholeRepo: pattern.includes("/") };
+  });
+  return (repo) => regexes.some(({ regex, wholeRepo }) => regex.test(wholeRepo ? repo : repo.split("/")[1] ?? repo));
+}
+
 export function classifySnapshot(
   snapshot: QueueSnapshot,
   config: Config,
   includeApproved = false,
 ): ClassifiedPR[] {
-  const excluded = new Set(config.filters.excludeRepos);
+  const isExcluded = repoMatcher(config.filters.excludeRepos);
   return snapshot.prs
-    .filter((pr) => !excluded.has(pr.repo))
+    .filter((pr) => !isExcluded(pr.repo))
     .map((pr) => classifyPR(pr, snapshot.viewer, config, { includeApproved }))
     .filter((pr): pr is ClassifiedPR => pr !== null)
     .sort(compareItems);
 }
 
+const cacheKeyFor = (opts: Scope) => JSON.stringify({ repo: opts.repo ?? null, org: opts.org ?? null });
+
+function toResult(snapshot: QueueSnapshot, opts: LoadQueueOptions, staleReason?: string): QueueResult {
+  return {
+    viewer: snapshot.viewer,
+    fetchedAt: snapshot.fetchedAt,
+    staleReason,
+    warnings: snapshot.warnings,
+    items: classifySnapshot(snapshot, opts.config, opts.includeApproved),
+  };
+}
+
+/** The last cached queue at any age, without touching the network. */
+export function loadCachedQueue(opts: LoadQueueOptions): QueueResult | null {
+  const snapshot = readCache(cacheKeyFor(opts), Infinity);
+  return snapshot ? toResult(snapshot, opts) : null;
+}
+
 /** Fetches (or reads from cache) and classifies the viewer's queue. Falls back to a stale cache when offline. */
 export async function loadQueue(opts: LoadQueueOptions): Promise<QueueResult> {
-  const cacheKey = JSON.stringify({ repo: opts.repo ?? null, org: opts.org ?? null });
+  const cacheKey = cacheKeyFor(opts);
 
   let snapshot = opts.refresh ? null : readCache(cacheKey, opts.config.ui.cacheTtlSeconds);
   let staleReason: string | undefined;
@@ -50,11 +77,5 @@ export async function loadQueue(opts: LoadQueueOptions): Promise<QueueResult> {
     }
   }
 
-  return {
-    viewer: snapshot.viewer,
-    fetchedAt: snapshot.fetchedAt,
-    staleReason,
-    warnings: snapshot.warnings,
-    items: classifySnapshot(snapshot, opts.config, opts.includeApproved),
-  };
+  return toResult(snapshot, opts, staleReason);
 }

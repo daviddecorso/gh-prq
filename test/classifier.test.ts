@@ -237,6 +237,7 @@ describe("author", () => {
     const result = classify(mine({ ciState: "FAILURE", failedChecks: ["unit-tests"] }));
     expect(result?.bucket).toBe("MY_PR_ACTION_NEEDED");
     expect(result?.reason).toBe("CI failing (unit-tests)");
+    expect(result?.failedChecks).toEqual(["unit-tests"]);
   });
 
   test("changes requested after my latest commit", () => {

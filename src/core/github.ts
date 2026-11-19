@@ -44,12 +44,20 @@ export function buildSearchQueries(scope: Scope) {
   };
 }
 
-export const QUEUE_QUERY = /* GraphQL */ `
-query FetchPRQueue($qAuthored: String!, $qRequested: String!, $qInvolved: String!) {
+export const ID_SEARCH_QUERY = /* GraphQL */ `
+query SearchPRIds($q: String!, $after: String) {
   viewer { login }
-  authored: search(query: $qAuthored, type: ISSUE, first: 40) { nodes { ...PRFields } }
-  reviewRequested: search(query: $qRequested, type: ISSUE, first: 40) { nodes { ...PRFields } }
-  involved: search(query: $qInvolved, type: ISSUE, first: 40) { nodes { ...PRFields } }
+  search(query: $q, type: ISSUE, first: 100, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes { ... on PullRequest { id } }
+  }
+}
+`;
+
+/** GitHub resolves one query's PRs serially, so small parallel batches are about 2x faster than a single query. */
+export const DETAILS_QUERY = /* GraphQL */ `
+query PRDetails($ids: [ID!]!) {
+  nodes(ids: $ids) { ...PRFields }
 }
 
 fragment PRFields on PullRequest {
@@ -168,12 +176,13 @@ interface RawPR {
   comments: { nodes: RawComment[] };
 }
 
-interface RawResponse {
+interface RawIdSearch {
   viewer: RawActor | null;
-  /** Search nodes that aren't PullRequests come back as `{}` because the fragment doesn't match. */
-  authored: { nodes: (RawPR | { id?: undefined } | null)[] } | null;
-  reviewRequested: { nodes: (RawPR | { id?: undefined } | null)[] } | null;
-  involved: { nodes: (RawPR | { id?: undefined } | null)[] } | null;
+  search: {
+    pageInfo: { hasNextPage: boolean; endCursor: string | null };
+    /** Issues come back as `{}` because the PullRequest fragment doesn't match. */
+    nodes: ({ id?: string } | null)[];
+  } | null;
 }
 
 const FAILED_CONCLUSIONS = new Set(["FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"]);
@@ -254,7 +263,11 @@ export function normalizePR(raw: RawPR, viewerReviewRequested: boolean): Normali
 
 const REQUEST_TIMEOUT_MS = 15_000;
 
-export async function fetchSnapshot(scope: Scope, token = getGhToken()): Promise<QueueSnapshot> {
+const DETAILS_BATCH_SIZE = 10;
+const MAX_PARALLEL_REQUESTS = 8;
+const MAX_SEARCH_PAGES = 3;
+
+async function graphql<T>(query: string, variables: object, token: string): Promise<{ data: T; warnings: string[] }> {
   const res = await fetch(GRAPHQL_URL, {
     method: "POST",
     headers: {
@@ -262,33 +275,65 @@ export async function fetchSnapshot(scope: Scope, token = getGhToken()): Promise
       "Content-Type": "application/json",
       "User-Agent": "gh-prq",
     },
-    body: JSON.stringify({ query: QUEUE_QUERY, variables: buildSearchQueries(scope) }),
+    body: JSON.stringify({ query, variables }),
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
-  if (!res.ok) throw new Error(`GitHub API returned ${res.status}: ${await res.text()}`);
+  if (!res.ok) throw new Error(`GitHub API returned ${res.status} ${res.statusText}`.trim());
 
-  const body = (await res.json()) as { data?: RawResponse | null; errors?: { message: string }[] };
+  const body = (await res.json()) as { data?: T | null; errors?: { message: string }[] };
   const warnings = body.errors?.map((e) => e.message) ?? [];
-  const viewer = body.data?.viewer?.login;
-  if (!body.data || !viewer) throw new Error(warnings.join("; ") || "Empty GraphQL response");
+  if (!body.data) throw new Error(warnings.join("; ") || "Empty GraphQL response");
+  return { data: body.data, warnings };
+}
 
-  const byId = new Map<string, NormalizedPR>();
-  const add = (nodes: (RawPR | { id?: undefined } | null)[] | undefined, fromRequested: boolean) => {
-    for (const node of nodes ?? []) {
-      if (!node?.id) continue;
-      const existing = byId.get(node.id);
-      if (existing) existing.viewerReviewRequested ||= fromRequested;
-      else byId.set(node.id, normalizePR(node, fromRequested));
+async function searchIds(q: string, token: string): Promise<{ viewer: string; ids: string[]; warnings: string[] }> {
+  const ids: string[] = [];
+  const warnings: string[] = [];
+  let viewer = "";
+  let after: string | null = null;
+  for (let page = 0; page < MAX_SEARCH_PAGES; page++) {
+    const res: { data: RawIdSearch; warnings: string[] } = await graphql<RawIdSearch>(ID_SEARCH_QUERY, { q, after }, token);
+    viewer ||= res.data.viewer?.login ?? "";
+    warnings.push(...res.warnings);
+    for (const node of res.data.search?.nodes ?? []) if (node?.id) ids.push(node.id);
+    const pageInfo = res.data.search?.pageInfo;
+    if (!pageInfo?.hasNextPage) break;
+    after = pageInfo.endCursor;
+  }
+  if (!viewer) throw new Error(warnings.join("; ") || "Empty GraphQL response");
+  return { viewer, ids, warnings };
+}
+
+async function mapLimited<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i]!);
     }
   };
-  add(body.data.authored?.nodes, false);
-  add(body.data.reviewRequested?.nodes, true);
-  add(body.data.involved?.nodes, false);
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
 
+export async function fetchSnapshot(scope: Scope, token = getGhToken()): Promise<QueueSnapshot> {
+  const { qAuthored, qRequested, qInvolved } = buildSearchQueries(scope);
+  const searches = await Promise.all([qAuthored, qRequested, qInvolved].map((q) => searchIds(q, token)));
+  const requestedIds = new Set(searches[1]!.ids);
+  const ids = [...new Set(searches.flatMap((s) => s.ids))];
+
+  const batches: string[][] = [];
+  for (let i = 0; i < ids.length; i += DETAILS_BATCH_SIZE) batches.push(ids.slice(i, i + DETAILS_BATCH_SIZE));
+  const details = await mapLimited(batches, MAX_PARALLEL_REQUESTS, (batch) =>
+    graphql<{ nodes: (RawPR | null)[] }>(DETAILS_QUERY, { ids: batch }, token),
+  );
+
+  const prs = details.flatMap((d) => d.data.nodes).filter((pr): pr is RawPR => pr !== null);
   return {
-    viewer,
+    viewer: searches[0]!.viewer,
     fetchedAt: new Date().toISOString(),
-    prs: [...byId.values()],
-    warnings,
+    prs: prs.map((pr) => normalizePR(pr, requestedIds.has(pr.id))),
+    warnings: [...new Set([...searches, ...details].flatMap((r) => r.warnings))],
   };
 }

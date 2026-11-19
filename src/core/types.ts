@@ -109,6 +109,7 @@ export interface ClassifiedPR {
   reason: string;
   allReasons: string[];
   ciState: CiState;
+  failedChecks: string[];
   additions: number;
   deletions: number;
   headOid: string;

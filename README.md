@@ -25,11 +25,14 @@ gh prq --plain
 ## Layout
 
 - `src/core/` has no UI dependencies (GraphQL fetch, classifier, cache, config) and is reused by every frontend.
-- `src/cli/` holds the arg parser and the `--plain` renderer.
-- `test/classifier.test.ts` covers each bucket transition.
+- `src/cli/` holds the arg parser, shared item filter, and the `--plain` renderer.
+- `src/tui/` is the Ink TUI. Components are plain `.ts` using `React.createElement` (Node's type stripping can't run `.tsx`); `model.ts` holds the pure row/cursor/scroll logic.
+- `test/` covers each bucket transition, the TUI model, and the TUI app via `ink-testing-library`.
+
+`gh prq` opens the TUI when stdin and stdout are TTYs, otherwise it prints `--plain`. The TUI shows the last cached queue immediately and refreshes in the background. Press `?` in the TUI for keys. `--exclude <glob>` (repeatable) and `filters.excludeRepos` hide repos: `acme/*` matches an owner, a bare `legacy-*` matches the repo name under any owner. `ui.autoRefreshSeconds` in `~/.config/gh-prq/config.json` sets the background refresh (default 300, `0` disables).
 
 ## Status
 
 - Phase 1 (core engine, `--plain`, `--json`): done
-- Phase 2 (Ink TUI): not started, `gh prq` currently renders `--plain`
+- Phase 2 (Ink TUI): done
 - Phase 3 (Claude review / re-review): not started

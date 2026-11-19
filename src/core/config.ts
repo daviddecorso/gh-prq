@@ -20,6 +20,8 @@ export interface Config {
     cacheTtlSeconds: number;
     collapseWaitingByDefault: boolean;
     showDrafts: boolean;
+    /** TUI background refresh interval; 0 disables. */
+    autoRefreshSeconds: number;
   };
 }
 
@@ -48,6 +50,7 @@ export const DEFAULT_CONFIG: Config = {
     cacheTtlSeconds: 30,
     collapseWaitingByDefault: true,
     showDrafts: false,
+    autoRefreshSeconds: 300,
   },
 };
 

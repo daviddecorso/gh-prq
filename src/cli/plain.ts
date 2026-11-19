@@ -7,24 +7,9 @@ import {
   type CiState,
   type QueueResult,
 } from "../core/types.ts";
+import { CI_STYLE, relativeTime, truncate } from "../core/format.ts";
 
 const TITLE_WIDTH = 50;
-
-export function relativeTime(iso: string, now = Date.now()): string {
-  const s = Math.max(0, Math.round((now - Date.parse(iso)) / 1000));
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m`;
-  const h = Math.floor(m / 60);
-  if (h < 48) return `${h}h`;
-  const d = Math.floor(h / 24);
-  if (d < 60) return `${d}d`;
-  return `${Math.floor(d / 30)}mo`;
-}
-
-function truncate(text: string, width: number): string {
-  return text.length <= width ? text : `${text.slice(0, width - 1)}…`;
-}
 
 function makePaint(color: boolean) {
   const wrap = (code: number) => (s: string) => (color ? `\x1b[${code}m${s}\x1b[0m` : s);
@@ -36,14 +21,10 @@ export function renderPlain(result: QueueResult, opts: { color: boolean; now?: n
   const paint = makePaint(opts.color);
   const { items } = result;
 
-  const ciGlyph = (state: CiState) =>
-    ({
-      SUCCESS: paint.green("✓"),
-      PENDING: paint.yellow("●"),
-      FAILURE: paint.red("✗"),
-      ERROR: paint.red("✗"),
-      NONE: paint.dim("·"),
-    })[state];
+  const ciGlyph = (state: CiState) => {
+    const { glyph, tone } = CI_STYLE[state];
+    return paint[tone](glyph);
+  };
 
   const actionable = items.filter((i) => ACTIONABLE_BUCKETS.has(i.bucket)).length;
   const waiting = items.filter((i) => WAITING_BUCKETS.has(i.bucket)).length;
