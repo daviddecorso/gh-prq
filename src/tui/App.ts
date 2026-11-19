@@ -2,11 +2,13 @@ import { Box, Text, useApp, useInput, useStdout } from "ink";
 import React from "react";
 import { relativeTime } from "../core/format.ts";
 import { ACTIONABLE_BUCKETS, WAITING_BUCKETS, type BucketId, type ClassifiedPR, type QueueResult } from "../core/types.ts";
+import type { Config } from "../core/config.ts";
 import type { Actions } from "./actions.ts";
 import { DetailPane } from "./DetailPane.ts";
 import { bucketOfRow, buildRows, clampCursor, restoreCursor, rowKey, scrollWindow } from "./model.ts";
 import { QueueList } from "./QueueList.ts";
 import { useQueue, type QueueLoader } from "./useQueue.ts";
+import { useReviews, type Reviewer } from "./useReviews.ts";
 
 const h = React.createElement;
 
@@ -21,7 +23,7 @@ const NO_ITEMS: ClassifiedPR[] = [];
 
 const firstLine = (text: string) => text.split(/\r?\n/, 1)[0]!;
 
-const KEY_HINTS = "j/k move  space fold  o open  c checkout  y copy  d details  r refresh  ? help  q quit";
+const KEY_HINTS = "j/k move  space fold  o open  c checkout  a claude  A claude session  d details  r refresh  ? help  q quit";
 
 const HELP_LINES: [string, string][] = [
   ["j / k / ↓ / ↑", "move"],
@@ -31,6 +33,10 @@ const HELP_LINES: [string, string][] = [
   ["c", "check out (exits)"],
   ["y", "copy URL"],
   ["d", "toggle details"],
+  ["a", "Claude drafts a review in the background"],
+  ["A", "interactive Claude review session (exits)"],
+  ["p", "post the draft as a pending GitHub review"],
+  ["x", "cancel the review or discard the draft"],
   ["r", "refresh"],
   ["q / esc", "quit"],
 ];
@@ -39,9 +45,17 @@ export interface AppProps {
   load: QueueLoader;
   initial?: QueueResult | null;
   actions: Actions;
+  reviewer: Reviewer;
+  claude: Pick<Config["claude"], "maxConcurrent" | "confirmBeforePosting">;
   collapseWaitingByDefault: boolean;
   autoRefreshSeconds: number;
   onCheckout: (pr: ClassifiedPR) => void;
+  onHandoff: (pr: ClassifiedPR) => void;
+}
+
+interface Confirm {
+  prompt: string;
+  onYes: () => void;
 }
 
 function useTerminalSize() {
@@ -75,12 +89,25 @@ function useStatus() {
   return [status, setStatus] as const;
 }
 
-export function App({ load, initial, actions, collapseWaitingByDefault, autoRefreshSeconds, onCheckout }: AppProps) {
+export function App({
+  load,
+  initial,
+  actions,
+  reviewer,
+  claude,
+  collapseWaitingByDefault,
+  autoRefreshSeconds,
+  onCheckout,
+  onHandoff,
+}: AppProps) {
   const { exit } = useApp();
   const { columns, rows: termRows } = useTerminalSize();
   const now = useNow();
   const queue = useQueue(load, autoRefreshSeconds, initial);
+  const reviews = useReviews(reviewer, claude.maxConcurrent);
   const [status, setStatus] = useStatus();
+  const [confirm, setConfirm] = React.useState<Confirm | null>(null);
+  const [quitArmed, setQuitArmed] = React.useState(false);
 
   const [collapsed, setCollapsed] = React.useState<ReadonlySet<BucketId>>(
     () => new Set(collapseWaitingByDefault ? WAITING_BUCKETS : []),
@@ -95,6 +122,7 @@ export function App({ load, initial, actions, collapseWaitingByDefault, autoRefr
   const rows = React.useMemo(() => buildRows(items, collapsed), [items, collapsed]);
   const cursor = restoreCursor(selection, rows);
   const current = rows[cursor];
+  const currentJob = current?.kind === "pr" ? reviews.jobs.get(current.pr.id) : undefined;
 
   const select = (index: number) => {
     const next = clampCursor(index, rows.length);
@@ -131,12 +159,37 @@ export function App({ load, initial, actions, collapseWaitingByDefault, autoRefr
     else setStatus("Select a PR first");
   };
 
+  const ref = (pr: ClassifiedPR) => `${pr.repo}#${pr.number}`;
+  const confirmThen = (prompt: string, onYes: () => void) => {
+    if (claude.confirmBeforePosting) setConfirm({ prompt, onYes });
+    else onYes();
+  };
+  const runningGuard = (what: string) =>
+    reviews.activeCount > 0
+      ? `${reviews.activeCount} Claude review${reviews.activeCount === 1 ? "" : "s"} running; ${what}`
+      : null;
+
   useInput((input, key) => {
     if (showHelp) {
       setShowHelp(false);
       return;
     }
-    if (input === "q" || key.escape) return exit();
+    if (confirm) {
+      setConfirm(null);
+      if (input === "y") confirm.onYes();
+      return;
+    }
+    const armed = quitArmed;
+    setQuitArmed(false);
+    if (input === "q" || key.escape) {
+      const guard = runningGuard("q again to quit and cancel them");
+      if (guard && !armed) {
+        setQuitArmed(true);
+        return setStatus(guard);
+      }
+      reviews.abortAll();
+      return exit();
+    }
     if (key.downArrow) return select(cursor + 1);
     if (key.upArrow) return select(cursor - 1);
     // Ink hands over key-repeat bursts as one string ("jjjk"), so net them out.
@@ -154,10 +207,42 @@ export function App({ load, initial, actions, collapseWaitingByDefault, autoRefr
     if (input === "y") return withPR((pr) => setStatus(actions.copy(pr)));
     if (input === "c") {
       return withPR((pr) => {
+        const guard = runningGuard("wait or cancel them (x) first");
+        if (guard) return setStatus(guard);
         const blocker = actions.checkoutBlocker(pr);
         if (blocker) return setStatus(blocker);
         onCheckout(pr);
         exit();
+      });
+    }
+    if (input === "a") return withPR((pr) => setStatus(reviews.start(pr)));
+    if (input === "A") {
+      return withPR((pr) => {
+        const guard = runningGuard("wait or cancel them (x) first");
+        if (guard) return setStatus(guard);
+        onHandoff(pr);
+        exit();
+      });
+    }
+    if (input === "p") {
+      return withPR((pr) => {
+        const job = reviews.jobs.get(pr.id);
+        if (job?.status !== "ready") return setStatus("No draft to post (a to start one)");
+        const stale = job.headOid !== pr.headOid ? " (draft is for an older commit)" : "";
+        confirmThen(`Post a pending review on ${ref(pr)}${stale}? y/n`, () =>
+          reviews.post(pr, (msg, posted) => {
+            setStatus(msg);
+            if (posted) actions.openFiles(pr);
+          }),
+        );
+      });
+    }
+    if (input === "x") {
+      return withPR((pr) => {
+        const job = reviews.jobs.get(pr.id);
+        if (!job) return setStatus("Nothing to cancel or discard");
+        if (job.status === "ready") confirmThen(`Discard the Claude draft for ${ref(pr)}? y/n`, () => setStatus(reviews.discard(pr)));
+        else setStatus(reviews.discard(pr));
       });
     }
   });
@@ -207,9 +292,9 @@ export function App({ load, initial, actions, collapseWaitingByDefault, autoRefr
   } else if (rows.length === 0) {
     body = h(Box, { height: listHeight }, h(Text, null, "Nothing in your queue."));
   } else {
-    const list = h(QueueList, { rows, cursor, start, height: listHeight, width: listWidth, now });
+    const list = h(QueueList, { rows, cursor, start, height: listHeight, width: listWidth, now, jobs: reviews.jobs });
     body = sideDetail
-      ? h(Box, null, list, h(DetailPane, { row: current, width: columns - listWidth, height: listHeight, now }))
+      ? h(Box, null, list, h(DetailPane, { row: current, width: columns - listWidth, height: listHeight, now, job: currentJob }))
       : list;
   }
 
@@ -219,8 +304,12 @@ export function App({ load, initial, actions, collapseWaitingByDefault, autoRefr
     header,
     ...banners,
     body,
-    showBottomDetail ? h(DetailPane, { row: current, width: columns, height: BOTTOM_DETAIL_HEIGHT, now }) : null,
+    showBottomDetail ? h(DetailPane, { row: current, width: columns, height: BOTTOM_DETAIL_HEIGHT, now, job: currentJob }) : null,
     h(Text, { dimColor: true }, "─".repeat(Math.max(0, columns))),
-    status ? h(Text, { color: "cyan", wrap: "truncate-end" }, status) : h(Text, { dimColor: true, wrap: "truncate-end" }, KEY_HINTS),
+    confirm
+      ? h(Text, { color: "yellow", wrap: "truncate-end" }, confirm.prompt)
+      : status
+        ? h(Text, { color: "cyan", wrap: "truncate-end" }, status)
+        : h(Text, { dimColor: true, wrap: "truncate-end" }, KEY_HINTS),
   );
 }

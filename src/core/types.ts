@@ -98,6 +98,12 @@ export interface QueueSnapshot {
   warnings: string[];
 }
 
+export interface ViewerThread {
+  path: string;
+  isOutdated: boolean;
+  comments: Comment[];
+}
+
 export interface ClassifiedPR {
   id: string;
   repo: string;
@@ -120,6 +126,8 @@ export interface ClassifiedPR {
     path?: string;
     createdAt: string;
   };
+  /** Unresolved threads the viewer commented in, oldest comment first. */
+  viewerThreads: ViewerThread[];
   /** Small row annotations, e.g. "team", "draft review". */
   badges: string[];
   updatedAt: string;

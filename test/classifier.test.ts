@@ -142,6 +142,22 @@ describe("reviewer: re-review vs waiting", () => {
     expect(result?.latestReplySnippet).toEqual({ author: "alice", body: "fixed", path: "src/a.ts", createdAt: at(3) });
   });
 
+  test("viewerThreads keeps only unresolved threads I commented in, without bot comments", () => {
+    const result = classify(
+      pr({
+        reviews: [review(ME, "COMMENTED", 1)],
+        threads: [
+          thread([comment(ME, 1, "mine"), comment("ci[bot]", 2), comment("alice", 3, "fixed")]),
+          thread([comment(ME, 1, "resolved")], true),
+          thread([comment("bob", 1, "not mine")]),
+        ],
+      }),
+    );
+    expect(result?.viewerThreads).toEqual([
+      { path: "src/a.ts", isOutdated: false, comments: [comment(ME, 1, "mine"), comment("alice", 3, "fixed")] },
+    ]);
+  });
+
   test("bot reply on my thread is ignored", () => {
     const result = classify(
       pr({

@@ -2,28 +2,66 @@ import { render } from "ink-testing-library";
 import React from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { ClassifiedPR, QueueResult } from "../src/core/types.ts";
+import type { ReviewDraft } from "../src/core/review/schema.ts";
 import type { Actions } from "../src/tui/actions.ts";
 import { App } from "../src/tui/App.ts";
+import type { Reviewer } from "../src/tui/useReviews.ts";
 import { item, result } from "./fixtures.ts";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+const DRAFT: ReviewDraft = {
+  summary: "Looks close. One race in the refresh path.",
+  comments: [{ path: "src/a.ts", line: 3, side: "RIGHT", body: "We can double-refresh here." }],
+  threadFollowUps: [],
+  suggestedVerdict: "comment",
+};
 
 function setup(
   load: (refresh: boolean) => Promise<QueueResult>,
   actionOverrides: Partial<Actions> = {},
   initial: QueueResult | null = null,
+  reviewerOverrides: Partial<Reviewer> = {},
+  maxConcurrent = 2,
 ) {
   const actions: Actions = {
     open: vi.fn((pr: ClassifiedPR) => `Opened ${pr.id}`),
+    openFiles: vi.fn(),
     copy: vi.fn((pr: ClassifiedPR) => `Copied ${pr.id}`),
     checkoutBlocker: vi.fn(() => null),
     ...actionOverrides,
   };
+  const reviewer: Reviewer = {
+    run: vi.fn(async () => DRAFT),
+    post: vi.fn(async () => "Pending review posted"),
+    loadDrafts: vi.fn(() => []),
+    saveDraft: vi.fn(),
+    removeDraft: vi.fn(),
+    ...reviewerOverrides,
+  };
   const onCheckout = vi.fn();
+  const onHandoff = vi.fn();
   const app = render(
-    React.createElement(App, { load, initial, actions, collapseWaitingByDefault: true, autoRefreshSeconds: 0, onCheckout }),
+    React.createElement(App, {
+      load,
+      initial,
+      actions,
+      reviewer,
+      claude: { maxConcurrent, confirmBeforePosting: true },
+      collapseWaitingByDefault: true,
+      autoRefreshSeconds: 0,
+      onCheckout,
+      onHandoff,
+    }),
   );
-  return { ...app, actions, onCheckout };
+  return { ...app, actions, reviewer, onCheckout, onHandoff };
+}
+
+async function press(app: { stdin: { write(s: string): void } }, ...keys: string[]) {
+  for (const key of keys) {
+    app.stdin.write(key);
+    await tick();
+  }
 }
 
 const queue = result([
@@ -130,5 +168,160 @@ describe("App", () => {
     app.stdin.write("c");
     await tick();
     expect(app.onCheckout).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }));
+  });
+});
+
+describe("Claude reviews", () => {
+  test("a runs a review in the background and shows the draft", async () => {
+    let finish!: (d: ReviewDraft) => void;
+    const app = setup(async () => queue, {}, null, { run: vi.fn(() => new Promise<ReviewDraft>((r) => (finish = r))) });
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "j", "a");
+    expect(app.reviewer.run).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }), expect.any(AbortSignal));
+    expect(app.lastFrame()).toContain("◐ claude");
+
+    finish(DRAFT);
+    await press(app, "d");
+    const frame = app.lastFrame()!;
+    expect(frame).toContain("✎ draft");
+    expect(frame).toContain("One race in the refresh path");
+    expect(app.reviewer.saveDraft).toHaveBeenCalled();
+  });
+
+  test("maxConcurrent queues extra reviews", async () => {
+    const app = setup(async () => queue, {}, null, { run: vi.fn(() => new Promise<ReviewDraft>(() => {})) }, 1);
+    cleanup = app.unmount;
+    await tick();
+    // Rows: header, PR1, header, PR2.
+    await press(app, "j", "a", "j", "j", "a");
+    expect(app.reviewer.run).toHaveBeenCalledTimes(1);
+    expect(app.lastFrame()).toContain("◌ claude queued");
+  });
+
+  test("p then y posts the draft; p then n doesn't", async () => {
+    const saved = { prId: "PR1", headOid: "c1", createdAt: "", draft: DRAFT };
+    const app = setup(async () => queue, {}, null, { loadDrafts: () => [saved] });
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "j", "p");
+    expect(app.lastFrame()).toContain("Post a pending review on acme/api#1? y/n");
+    await press(app, "n");
+    expect(app.reviewer.post).not.toHaveBeenCalled();
+
+    await press(app, "p", "y");
+    expect(app.reviewer.post).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }), DRAFT, "c1");
+    expect(app.reviewer.removeDraft).toHaveBeenCalled();
+    expect(app.actions.openFiles).toHaveBeenCalled();
+    expect(app.lastFrame()).toContain("Pending review posted");
+  });
+
+  test("a failed post keeps the draft and shows the error", async () => {
+    const saved = { prId: "PR1", headOid: "c1", createdAt: "", draft: DRAFT };
+    const app = setup(async () => queue, {}, null, {
+      loadDrafts: () => [saved],
+      post: vi.fn(async () => {
+        throw new Error("You already have a pending review");
+      }),
+    });
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "j", "p", "y");
+    expect(app.lastFrame()).toContain("You already have a pending review");
+    expect(app.lastFrame()).toContain("✎ draft");
+    expect(app.reviewer.removeDraft).not.toHaveBeenCalled();
+  });
+
+  test("a draft for an older head is marked stale", async () => {
+    const saved = { prId: "PR1", headOid: "old", createdAt: "", draft: DRAFT };
+    const app = setup(async () => queue, {}, null, { loadDrafts: () => [saved] });
+    cleanup = app.unmount;
+    await tick();
+    expect(app.lastFrame()).toContain("✎ draft (stale)");
+  });
+
+  test("A hands off to an interactive session", async () => {
+    const app = setup(async () => queue);
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "j", "A");
+    expect(app.onHandoff).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }));
+  });
+
+  test("q with a running review asks twice and aborts it", async () => {
+    let signal!: AbortSignal;
+    const app = setup(async () => queue, {}, null, {
+      run: vi.fn((_pr, s: AbortSignal) => {
+        signal = s;
+        return new Promise<ReviewDraft>(() => {});
+      }),
+    });
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "j", "a", "q");
+    expect(app.lastFrame()).toContain("1 Claude review running; q again to quit");
+    expect(signal.aborted).toBe(false);
+    await press(app, "q");
+    expect(signal.aborted).toBe(true);
+  });
+
+  test("x cancels a running review", async () => {
+    let signal!: AbortSignal;
+    const app = setup(async () => queue, {}, null, {
+      run: vi.fn((_pr, s: AbortSignal) => {
+        signal = s;
+        return new Promise<ReviewDraft>(() => {});
+      }),
+    });
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "j", "a", "x");
+    expect(signal.aborted).toBe(true);
+    expect(app.lastFrame()).toContain("Review cancelled");
+    expect(app.lastFrame()).not.toContain("◐ claude");
+  });
+
+  test("cancelling and restarting keeps the new run cancellable", async () => {
+    const signals: AbortSignal[] = [];
+    const resolvers: ((d: ReviewDraft) => void)[] = [];
+    const app = setup(async () => queue, {}, null, {
+      run: vi.fn((_pr, s: AbortSignal) => {
+        signals.push(s);
+        return new Promise<ReviewDraft>((r) => resolvers.push(r));
+      }),
+    });
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "j", "a", "x", "a");
+    resolvers[0]!(DRAFT);
+    await tick();
+    await press(app, "x");
+    expect(signals[0]!.aborted).toBe(true);
+    expect(signals[1]!.aborted).toBe(true);
+  });
+
+  test("x while posting doesn't discard the in-flight post", async () => {
+    const saved = { prId: "PR1", headOid: "c1", createdAt: "", draft: DRAFT };
+    const app = setup(async () => queue, {}, null, {
+      loadDrafts: () => [saved],
+      post: vi.fn(() => new Promise<string>(() => {})),
+    });
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "j", "p", "y", "x");
+    expect(app.lastFrame()).toContain("Post in progress");
+    expect(app.lastFrame()).toContain("✎ posting");
+    expect(app.reviewer.removeDraft).not.toHaveBeenCalled();
+  });
+
+  test("c is blocked while a review is running", async () => {
+    const app = setup(async () => queue, {}, null, {
+      run: vi.fn(() => new Promise<ReviewDraft>(() => {})),
+    });
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "j", "a", "c");
+    expect(app.onCheckout).not.toHaveBeenCalled();
+    expect(app.lastFrame()).toContain("1 Claude review running");
   });
 });

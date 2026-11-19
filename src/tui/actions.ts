@@ -1,9 +1,12 @@
-import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { remoteForRepo } from "../core/git.ts";
 import type { ClassifiedPR } from "../core/types.ts";
 
 export interface Actions {
   /** Each returns a footer status message. */
   open(pr: ClassifiedPR): string;
+  /** Opens the PR's Files tab, where a pending review is submitted. */
+  openFiles(pr: ClassifiedPR): void;
   copy(pr: ClassifiedPR): string;
   /** `null` means the PR can be checked out from the current directory. */
   checkoutBlocker(pr: ClassifiedPR): string | null;
@@ -20,31 +23,20 @@ const CLIPBOARD_COMMANDS: [string, string[]][] =
         ["xsel", ["--clipboard", "--input"]],
       ];
 
-const REMOTE_REPO_RE = /^(?:https?:\/\/[^/]+\/|ssh:\/\/[^/]+\/|[^@/\s]+@[^:/\s]+:)([^/\s]+\/[^/\s]+?)(?:\.git)?$/;
-
-let localRepos: ReadonlySet<string> | undefined;
-
-function localReposInCwd(): ReadonlySet<string> {
-  if (localRepos) return localRepos;
-  const repos = new Set<string>();
-  try {
-    const out = execFileSync("git", ["remote", "-v"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-    for (const line of out.split(/\r?\n/)) {
-      const url = line.split(/\s+/)[1];
-      const match = url?.match(REMOTE_REPO_RE);
-      if (match) repos.add(match[1]!.toLowerCase());
-    }
-  } catch {}
-  localRepos = repos;
-  return repos;
+function spawnDetached(cmd: string, args: string[]) {
+  const child = spawn(cmd, args, { detached: true, stdio: "ignore" });
+  child.on("error", () => {});
+  child.unref();
 }
 
 export const defaultActions: Actions = {
   open(pr) {
-    const child = spawn("gh", ["pr", "view", pr.url, "--web"], { detached: true, stdio: "ignore" });
-    child.on("error", () => {});
-    child.unref();
+    spawnDetached("gh", ["pr", "view", pr.url, "--web"]);
     return `Opened ${ref(pr)}`;
+  },
+
+  openFiles(pr) {
+    spawnDetached(process.platform === "darwin" ? "open" : "xdg-open", [`${pr.url}/files`]);
   },
 
   copy(pr) {
@@ -58,7 +50,7 @@ export const defaultActions: Actions = {
   },
 
   checkoutBlocker(pr) {
-    if (localReposInCwd().has(pr.repo.toLowerCase())) return null;
+    if (remoteForRepo(pr.repo)) return null;
     return `cd into ${pr.repo} to check out #${pr.number}`;
   },
 };

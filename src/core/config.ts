@@ -8,6 +8,8 @@ export interface Config {
     model: string;
     remoteRepos: string[];
     confirmBeforePosting: boolean;
+    /** Headless reviews that run at once; the rest queue. */
+    maxConcurrent: number;
   };
   filters: {
     ignoredBots: string[];
@@ -31,6 +33,7 @@ export const DEFAULT_CONFIG: Config = {
     model: "sonnet",
     remoteRepos: [],
     confirmBeforePosting: true,
+    maxConcurrent: 2,
   },
   filters: {
     ignoredBots: [

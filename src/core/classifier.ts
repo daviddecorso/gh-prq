@@ -65,6 +65,10 @@ export function classifyPR(
     .map((t) => ({ ...t, comments: t.comments.filter(isHuman) }))
     .filter((t) => t.comments.length > 0);
 
+  const viewerThreads = unresolvedThreads
+    .filter((t) => t.comments.some((c) => c.author === viewer))
+    .map(({ path, isOutdated, comments }) => ({ path, isOutdated, comments }));
+
   const badges: string[] = [];
   if (pr.reviews.some((r) => r.state === "PENDING" && r.author === viewer)) badges.push("draft review");
 
@@ -98,6 +102,7 @@ export function classifyPR(
     headOid: pr.headOid,
     lastReviewedCommitOid: extra.lastReviewedCommitOid ?? null,
     ...(extra.snippet ? { latestReplySnippet: extra.snippet } : {}),
+    viewerThreads,
     badges,
     updatedAt: pr.updatedAt,
     actionSince,

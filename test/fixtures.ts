@@ -20,6 +20,7 @@ export function item(id: string, bucket: BucketId, overrides: Partial<Classified
     deletions: 1,
     headOid: "c1",
     lastReviewedCommitOid: null,
+    viewerThreads: [],
     badges: [],
     updatedAt: new Date(NOW).toISOString(),
     actionSince: new Date(NOW).toISOString(),

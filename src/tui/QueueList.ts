@@ -3,6 +3,7 @@ import React from "react";
 import { CI_STYLE, relativeTime, truncate, type Tone } from "../core/format.ts";
 import { BUCKET_LABELS, type ClassifiedPR } from "../core/types.ts";
 import { rowKey, type Row } from "./model.ts";
+import type { ReviewJob } from "./useReviews.ts";
 
 const h = React.createElement;
 
@@ -15,12 +16,30 @@ interface QueueListProps {
   height: number;
   width: number;
   now: number;
+  jobs: ReadonlyMap<string, ReviewJob>;
 }
 
 const ref = (pr: ClassifiedPR) => `${pr.repo}#${pr.number}`;
 const diff = (pr: ClassifiedPR) => `+${pr.additions}/-${pr.deletions}`;
 
-export function QueueList({ rows, cursor, start, height, width, now }: QueueListProps) {
+export function reviewBadge(job: ReviewJob | undefined, pr: ClassifiedPR, now: number): { text: string; color: string } | null {
+  switch (job?.status) {
+    case undefined:
+      return null;
+    case "queued":
+      return { text: "◌ claude queued", color: "gray" };
+    case "running":
+      return { text: `◐ claude ${relativeTime(new Date(job.startedAt).toISOString(), now)}`, color: "magenta" };
+    case "failed":
+      return { text: "✗ claude", color: "red" };
+    case "posting":
+      return { text: "✎ posting…", color: "magenta" };
+    case "ready":
+      return job.headOid === pr.headOid ? { text: "✎ draft", color: "magenta" } : { text: "✎ draft (stale)", color: "yellow" };
+  }
+}
+
+export function QueueList({ rows, cursor, start, height, width, now, jobs }: QueueListProps) {
   const prs = rows.flatMap((r) => (r.kind === "pr" ? [r.pr] : []));
   const refWidth = Math.max(0, ...prs.map((pr) => ref(pr).length));
   const diffWidth = Math.max(0, ...prs.map((pr) => diff(pr).length));
@@ -43,6 +62,7 @@ export function QueueList({ rows, cursor, start, height, width, now }: QueueList
 
       const { pr } = row;
       const ci = CI_STYLE[pr.ciState];
+      const badge = reviewBadge(jobs.get(pr.id), pr, now);
       return h(
         Text,
         { key: rowKey(row), wrap: "truncate-end" },
@@ -56,6 +76,7 @@ export function QueueList({ rows, cursor, start, height, width, now }: QueueList
         "  ",
         h(Text, { color: TONE_COLOR[ci.tone], dimColor: ci.tone === "dim" }, ci.glyph),
         "  ",
+        badge ? h(Text, { color: badge.color }, `${badge.text}  `) : null,
         pr.reason,
         h(Text, { dimColor: true }, ` · ${relativeTime(pr.actionSince, now)}`),
         ...pr.badges.map((b) => h(Text, { key: b, color: "cyan" }, ` [${b}]`)),

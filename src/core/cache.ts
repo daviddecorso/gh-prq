@@ -10,7 +10,7 @@ interface CacheEntry {
 
 type CacheFile = Record<string, CacheEntry>;
 
-function cacheDir(): string {
+export function cacheDir(): string {
   const base = process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache");
   return join(base, "gh-prq");
 }
