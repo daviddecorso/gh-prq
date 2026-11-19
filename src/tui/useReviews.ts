@@ -29,11 +29,16 @@ export interface ReviewsState {
 
 const isActive = (job: ReviewJob | undefined) => job?.status === "queued" || job?.status === "running";
 
-export function useReviews(reviewer: Reviewer, maxConcurrent: number): ReviewsState {
+export type ReviewSettled = (pr: ClassifiedPR, outcome: { ok: true } | { ok: false; error: string }) => void;
+
+/** `onSettled` fires when a background run finishes or fails, not when it's cancelled. */
+export function useReviews(reviewer: Reviewer, maxConcurrent: number, onSettled?: ReviewSettled): ReviewsState {
   const [jobs, setJobs] = React.useState<ReadonlyMap<string, ReviewJob>>(
     () => new Map(reviewer.loadDrafts().map((s) => [s.prId, { status: "ready", headOid: s.headOid, draft: s.draft }])),
   );
   const controllers = React.useRef(new Map<string, AbortController>());
+  const settledRef = React.useRef(onSettled);
+  settledRef.current = onSettled;
 
   const update = React.useCallback((id: string, job: ReviewJob | null) => {
     setJobs((prev) => {
@@ -60,9 +65,12 @@ export function useReviews(reviewer: Reviewer, maxConcurrent: number): ReviewsSt
           if (controller.signal.aborted) return;
           reviewer.saveDraft(pr, { prId: pr.id, headOid: pr.headOid, createdAt: new Date().toISOString(), draft });
           update(id, { status: "ready", headOid: pr.headOid, draft });
+          settledRef.current?.(pr, { ok: true });
         })
         .catch((err: Error) => {
-          if (!controller.signal.aborted) update(id, { status: "failed", pr, error: err.message });
+          if (controller.signal.aborted) return;
+          update(id, { status: "failed", pr, error: err.message });
+          settledRef.current?.(pr, { ok: false, error: err.message });
         })
         .finally(() => {
           if (controllers.current.get(id) === controller) controllers.current.delete(id);

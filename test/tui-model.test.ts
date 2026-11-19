@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { buildRows, restoreCursor, rowKey, scrollWindow } from "../src/tui/model.ts";
+import { adjacentHeader, buildRows, keyHints, matchesFilter, restoreCursor, rowKey, scrollWindow } from "../src/tui/model.ts";
 import { item } from "./fixtures.ts";
 
 const items = [
@@ -33,8 +33,55 @@ describe("restoreCursor", () => {
     expect(restoreCursor({ key: "pr:PR9", index: 7 }, rows)).toBe(1);
   });
 
-  test("no prior selection starts at the top", () => {
-    expect(restoreCursor(null, buildRows(items, new Set()))).toBe(0);
+  test("no prior selection starts on the first PR", () => {
+    expect(restoreCursor(null, buildRows(items, new Set()))).toBe(1);
+  });
+
+  test("a null index falls back to the first PR when the key is gone", () => {
+    const rows = buildRows(items, new Set(), "PR3");
+    expect(rowKey(rows[restoreCursor({ key: "pr:PR1", index: null }, rows)]!)).toBe("pr:PR3");
+  });
+});
+
+describe("filtering", () => {
+  test("matchesFilter checks ref, title, and author case-insensitively", () => {
+    const pr = item("PR1", "NEEDS_REREVIEW", { title: "Fix Login", author: "octo" });
+    expect(matchesFilter(pr, "login")).toBe(true);
+    expect(matchesFilter(pr, "@OCTO")).toBe(true);
+    expect(matchesFilter(pr, `${pr.repo}#${pr.number}`)).toBe(true);
+    expect(matchesFilter(pr, "logout")).toBe(false);
+  });
+
+  test("a query expands collapsed buckets and drops empty ones", () => {
+    const rows = buildRows(items, new Set(["WAITING_ON_AUTHOR"]), "PR3");
+    expect(rows.map(rowKey)).toEqual(["h:WAITING_ON_AUTHOR", "pr:PR3"]);
+    expect(rows[0]).toMatchObject({ collapsed: false, count: 1 });
+  });
+});
+
+describe("adjacentHeader", () => {
+  const rows = buildRows(items, new Set());
+
+  test("jumps to the next and previous headers", () => {
+    expect(adjacentHeader(rows, 1, 1)).toBe(3);
+    expect(adjacentHeader(rows, 4, -1)).toBe(3);
+    expect(adjacentHeader(rows, 3, -1)).toBe(0);
+  });
+
+  test("stays put past the last header", () => {
+    expect(adjacentHeader(rows, 4, 1)).toBe(4);
+  });
+});
+
+describe("keyHints", () => {
+  const rows = buildRows(items, new Set());
+
+  test("leads with help and adapts to the row", () => {
+    expect(keyHints(rows[0], undefined, false)).toMatch(/^\? help {2}enter fold/);
+    expect(keyHints(rows[0], undefined, true)).not.toContain("enter fold");
+    expect(keyHints(rows[1], undefined, false)).toContain("a claude");
+    expect(keyHints(rows[1], { status: "running", pr: items[0]!, startedAt: 0 }, false)).toContain("x cancel");
+    expect(keyHints(rows[1], undefined, true)).toContain("esc clear");
   });
 });
 

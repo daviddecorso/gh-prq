@@ -65,7 +65,7 @@ export function QueueList({ rows, cursor, start, height, width, now, jobs }: Que
       const badge = reviewBadge(jobs.get(pr.id), pr, now);
       return h(
         Text,
-        { key: rowKey(row), wrap: "truncate-end" },
+        { key: rowKey(row), wrap: "truncate-end", inverse: selected },
         pointer,
         " ",
         h(Text, { bold: selected }, ref(pr).padEnd(refWidth)),

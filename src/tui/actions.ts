@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { remoteForRepo } from "../core/git.ts";
 import { approvePR } from "../core/review/post.ts";
+import type { ReviewDraft } from "../core/review/schema.ts";
 import type { ClassifiedPR } from "../core/types.ts";
 
 export interface Actions {
@@ -10,10 +11,24 @@ export interface Actions {
   openFiles(pr: ClassifiedPR): void;
   copy(pr: ClassifiedPR): string;
   approve(pr: ClassifiedPR): Promise<string>;
-  /** Pages `gh pr view` plus inline review comments, blocking until the pager quits. Returns an error message or null. */
-  viewDetails(pr: ClassifiedPR): string | null;
+  /** Pages the Claude draft (if given), `gh pr view`, and inline review comments, blocking until the pager quits. Returns an error message or null. */
+  viewDetails(pr: ClassifiedPR, draft?: ReviewDraft): string | null;
   /** `null` means the PR can be checked out from the current directory. */
   checkoutBlocker(pr: ClassifiedPR): string | null;
+  bell(): void;
+}
+
+const RULE = "-".repeat(40);
+
+export function formatDraft(draft: ReviewDraft): string {
+  const lines = ["CLAUDE DRAFT", `Suggests: ${draft.suggestedVerdict.replace("_", " ")}`, "", draft.summary.trim(), ""];
+  if (draft.threadFollowUps.length) {
+    lines.push("Your open threads:");
+    for (const f of draft.threadFollowUps) lines.push(`  [${f.status.replace("_", " ")}] ${f.path}: ${f.note}`);
+    lines.push("");
+  }
+  for (const c of draft.comments) lines.push(RULE, `${c.path}:${c.line}`, "", c.body.trim(), "");
+  return lines.join("\n");
 }
 
 const ref = (pr: ClassifiedPR) => `${pr.repo}#${pr.number}`;
@@ -70,18 +85,25 @@ export const defaultActions: Actions = {
 
   approve: (pr) => approvePR(pr),
 
-  viewDetails(pr) {
+  viewDetails(pr, draft) {
     const view = ghText(["pr", "view", pr.url]);
-    if (!view.ok) return view.text.split(/\r?\n/, 1)[0]!;
-    const comments = ghText(["api", "--paginate", `repos/${pr.repo}/pulls/${pr.number}/comments`, "--jq", REVIEW_COMMENT_JQ]);
-    const commentsText = !comments.ok
-      ? `Couldn't load review comments: ${comments.text}\n`
-      : comments.text.trim()
-        ? comments.text
-        : "No inline review comments.\n";
+    if (!view.ok && !draft) return view.text.split(/\r?\n/, 1)[0]!;
+    let detailsText: string;
+    if (!view.ok) {
+      detailsText = `Couldn't load PR details: ${view.text}\n`;
+    } else {
+      const comments = ghText(["api", "--paginate", `repos/${pr.repo}/pulls/${pr.number}/comments`, "--jq", REVIEW_COMMENT_JQ]);
+      const commentsText = !comments.ok
+        ? `Couldn't load review comments: ${comments.text}\n`
+        : comments.text.trim()
+          ? comments.text
+          : "No inline review comments.\n";
+      detailsText = `${view.text}\n\nREVIEW COMMENTS\n${commentsText}`;
+    }
+    const draftText = draft ? `${formatDraft(draft)}\n${"=".repeat(40)}\n\n` : "";
     // Pinned LESS so a user's -F/-X can't print into the main screen and corrupt Ink's frame.
     const res = spawnSync("less", [], {
-      input: `${view.text}\n\nREVIEW COMMENTS\n${commentsText}`,
+      input: `${draftText}${detailsText}`,
       stdio: ["pipe", "inherit", "inherit"],
       env: { ...process.env, LESS: "-R" },
     });
@@ -91,6 +113,10 @@ export const defaultActions: Actions = {
   checkoutBlocker(pr) {
     if (remoteForRepo(pr.repo)) return null;
     return `cd into ${pr.repo} to check out #${pr.number}`;
+  },
+
+  bell() {
+    process.stdout.write("\x07");
   },
 };
 

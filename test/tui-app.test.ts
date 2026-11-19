@@ -33,6 +33,7 @@ function setup(
     approve: vi.fn(async (pr: ClassifiedPR) => `Approved ${pr.id}`),
     checkoutBlocker: vi.fn(() => null),
     viewDetails: vi.fn(() => null),
+    bell: vi.fn(),
     ...actionOverrides,
   };
   const reviewer: Reviewer = {
@@ -133,11 +134,9 @@ describe("App", () => {
     expect(app.lastFrame()).toContain("PR PR3");
   });
 
-  test("j then o opens the selected PR", async () => {
+  test("starts on the first PR and o opens it", async () => {
     const app = setup(async () => queue);
     cleanup = app.unmount;
-    await tick();
-    app.stdin.write("j");
     await tick();
     app.stdin.write("o");
     await tick();
@@ -149,7 +148,7 @@ describe("App", () => {
     const app = setup(async () => queue);
     cleanup = app.unmount;
     await tick();
-    app.stdin.write("jjjjk");
+    app.stdin.write("jjjk");
     await tick();
     app.stdin.write("o");
     await tick();
@@ -175,8 +174,6 @@ describe("App", () => {
     const app = setup(async () => queue, { checkoutBlocker: () => "cd into acme/api to check out #1" });
     cleanup = app.unmount;
     await tick();
-    app.stdin.write("j");
-    await tick();
     app.stdin.write("c");
     await tick();
     expect(app.lastFrame()).toContain("cd into acme/api");
@@ -186,8 +183,6 @@ describe("App", () => {
   test("checkout from the right repo hands the PR back", async () => {
     const app = setup(async () => queue);
     cleanup = app.unmount;
-    await tick();
-    app.stdin.write("j");
     await tick();
     app.stdin.write("c");
     await tick();
@@ -199,7 +194,7 @@ describe("App", () => {
     const app = setup(load);
     cleanup = app.unmount;
     await tick();
-    await press(app, "j", "v");
+    await press(app, "v");
     expect(app.lastFrame()).toContain("Approve acme/api#1? y/n");
     await press(app, "n");
     expect(app.actions.approve).not.toHaveBeenCalled();
@@ -214,7 +209,7 @@ describe("App", () => {
     const app = setup(async () => result([item("PR1", "MY_PR_READY", { author: "me" })]));
     cleanup = app.unmount;
     await tick();
-    await press(app, "j", "v");
+    await press(app, "v");
     expect(app.lastFrame()).toContain("You can't approve your own PR");
     expect(app.actions.approve).not.toHaveBeenCalled();
   });
@@ -227,8 +222,61 @@ describe("App", () => {
     });
     cleanup = app.unmount;
     await tick();
-    await press(app, "j", "v", "y");
+    await press(app, "v", "y");
     expect(app.lastFrame()).toContain("Approve failed: HTTP 422");
+  });
+
+  test("any key but y cancels a confirm and says so", async () => {
+    const app = setup(async () => queue);
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "v", "n");
+    expect(app.lastFrame()).toContain("Cancelled");
+  });
+
+  test("enter on a bucket header folds it", async () => {
+    const app = setup(async () => queue);
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "k", "\r");
+    expect(app.lastFrame()).toContain("▸ NEEDS RE-REVIEW (1)");
+    expect(app.lastFrame()).not.toContain("PR PR1");
+    expect(app.actions.open).not.toHaveBeenCalled();
+  });
+
+  test("] jumps to the next bucket", async () => {
+    const app = setup(async () => queue);
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "]", "j", "o");
+    expect(app.actions.open).toHaveBeenCalledWith(expect.objectContaining({ id: "PR2" }));
+  });
+
+  test("/ filters rows as you type and esc clears without quitting", async () => {
+    const app = setup(async () => queue);
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "/", "P", "R", "3");
+    let frame = app.lastFrame()!;
+    expect(frame).toContain("PR PR3");
+    expect(frame).not.toContain("PR PR1");
+    expect(frame).toContain('filter "PR3" · 1 match');
+
+    await press(app, "\r", "o");
+    expect(app.actions.open).toHaveBeenCalledWith(expect.objectContaining({ id: "PR3" }));
+
+    await press(app, "\x1b");
+    frame = app.lastFrame()!;
+    expect(frame).toContain("PR PR1");
+    expect(frame).not.toContain("filter");
+  });
+
+  test("a filter with no matches says so", async () => {
+    const app = setup(async () => queue);
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "/", "z", "z");
+    expect(app.lastFrame()).toContain('No PRs match "zz"');
   });
 });
 
@@ -238,7 +286,7 @@ describe("Claude reviews", () => {
     const app = setup(async () => queue, {}, null, { run: vi.fn(() => new Promise<ReviewDraft>((r) => (finish = r))) });
     cleanup = app.unmount;
     await tick();
-    await press(app, "j", "a");
+    await press(app, "a");
     expect(app.reviewer.run).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }), expect.any(AbortSignal));
     expect(app.lastFrame()).toContain("◐ claude");
 
@@ -248,13 +296,33 @@ describe("Claude reviews", () => {
     expect(frame).toContain("✎ draft");
     expect(frame).toContain("One race in the refresh path");
     expect(app.reviewer.saveDraft).toHaveBeenCalled();
+    expect(app.actions.bell).toHaveBeenCalled();
+  });
+
+  test("a finished background review announces itself", async () => {
+    const app = setup(async () => queue);
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "a");
+    await tick();
+    expect(app.lastFrame()).toContain("Claude draft ready for acme/api#1");
+    expect(app.actions.bell).toHaveBeenCalledTimes(1);
+  });
+
+  test("d pages the draft along with the details when one exists", async () => {
+    const saved = { prId: "PR1", headOid: "c1", createdAt: "", draft: DRAFT };
+    const app = setup(async () => queue, {}, null, { loadDrafts: () => [saved] });
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "d");
+    expect(app.actions.viewDetails).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }), DRAFT);
   });
 
   test("d shows full details and surfaces failures", async () => {
     const app = setup(async () => queue, { viewDetails: vi.fn(() => "no pull requests found") });
     cleanup = app.unmount;
     await tick();
-    await press(app, "j", "d");
+    await press(app, "d");
     expect(app.actions.viewDetails).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }));
     expect(app.lastFrame()).toContain("no pull requests found");
   });
@@ -264,7 +332,7 @@ describe("Claude reviews", () => {
     cleanup = app.unmount;
     await tick();
     // Rows: header, PR1, header, PR2.
-    await press(app, "j", "a", "j", "j", "a");
+    await press(app, "a", "j", "j", "a");
     expect(app.reviewer.run).toHaveBeenCalledTimes(1);
     expect(app.lastFrame()).toContain("◌ claude queued");
   });
@@ -274,7 +342,7 @@ describe("Claude reviews", () => {
     const app = setup(async () => queue, {}, null, { loadDrafts: () => [saved] });
     cleanup = app.unmount;
     await tick();
-    await press(app, "j", "p");
+    await press(app, "p");
     expect(app.lastFrame()).toContain("Post a pending review on acme/api#1? y/n");
     await press(app, "n");
     expect(app.reviewer.post).not.toHaveBeenCalled();
@@ -296,7 +364,7 @@ describe("Claude reviews", () => {
     });
     cleanup = app.unmount;
     await tick();
-    await press(app, "j", "p", "y");
+    await press(app, "p", "y");
     expect(app.lastFrame()).toContain("You already have a pending review");
     expect(app.lastFrame()).toContain("✎ draft");
     expect(app.reviewer.removeDraft).not.toHaveBeenCalled();
@@ -314,7 +382,7 @@ describe("Claude reviews", () => {
     const app = setup(async () => queue);
     cleanup = app.unmount;
     await tick();
-    await press(app, "j", "A");
+    await press(app, "A");
     expect(app.onHandoff).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }));
   });
 
@@ -328,7 +396,7 @@ describe("Claude reviews", () => {
     });
     cleanup = app.unmount;
     await tick();
-    await press(app, "j", "a", "q");
+    await press(app, "a", "q");
     expect(app.lastFrame()).toContain("1 Claude review running; q again to quit");
     expect(signal.aborted).toBe(false);
     await press(app, "q");
@@ -345,7 +413,7 @@ describe("Claude reviews", () => {
     });
     cleanup = app.unmount;
     await tick();
-    await press(app, "j", "a", "x");
+    await press(app, "a", "x");
     expect(signal.aborted).toBe(true);
     expect(app.lastFrame()).toContain("Review cancelled");
     expect(app.lastFrame()).not.toContain("◐ claude");
@@ -362,7 +430,7 @@ describe("Claude reviews", () => {
     });
     cleanup = app.unmount;
     await tick();
-    await press(app, "j", "a", "x", "a");
+    await press(app, "a", "x", "a");
     resolvers[0]!(DRAFT);
     await tick();
     await press(app, "x");
@@ -378,7 +446,7 @@ describe("Claude reviews", () => {
     });
     cleanup = app.unmount;
     await tick();
-    await press(app, "j", "p", "y", "x");
+    await press(app, "p", "y", "x");
     expect(app.lastFrame()).toContain("Post in progress");
     expect(app.lastFrame()).toContain("✎ posting");
     expect(app.reviewer.removeDraft).not.toHaveBeenCalled();
@@ -390,7 +458,7 @@ describe("Claude reviews", () => {
     });
     cleanup = app.unmount;
     await tick();
-    await press(app, "j", "a", "c");
+    await press(app, "a", "c");
     expect(app.onCheckout).not.toHaveBeenCalled();
     expect(app.lastFrame()).toContain("1 Claude review running");
   });
