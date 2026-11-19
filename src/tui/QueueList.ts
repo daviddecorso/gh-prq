@@ -1,6 +1,6 @@
 import { Box, Text } from "ink";
 import React from "react";
-import { CI_STYLE, relativeTime, truncate, type Tone } from "../core/format.ts";
+import { CI_STYLE, padEndDisplay, relativeTime, truncate, type Tone } from "../core/format.ts";
 import { BUCKET_LABELS, type ClassifiedPR } from "../core/types.ts";
 import { rowKey, type Row } from "./model.ts";
 import type { ReviewJob } from "./useReviews.ts";
@@ -70,7 +70,7 @@ export function QueueList({ rows, cursor, start, height, width, now, jobs }: Que
         " ",
         h(Text, { bold: selected }, ref(pr).padEnd(refWidth)),
         "  ",
-        h(Text, { bold: selected }, truncate(pr.title, titleWidth).padEnd(titleWidth)),
+        h(Text, { bold: selected }, padEndDisplay(truncate(pr.title, titleWidth), titleWidth)),
         "  ",
         h(Text, { dimColor: true }, diff(pr).padEnd(diffWidth)),
         "  ",

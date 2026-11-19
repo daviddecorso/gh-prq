@@ -72,9 +72,22 @@ export function loadConfig(path = configPath()): Config {
     throw new Error(`Invalid config at ${path}: ${(err as Error).message}`);
   }
 
-  return {
+  const config: Config = {
     claude: { ...DEFAULT_CONFIG.claude, ...user.claude },
     filters: { ...DEFAULT_CONFIG.filters, ...user.filters },
     ui: { ...DEFAULT_CONFIG.ui, ...user.ui },
   };
+  const list = (value: unknown, field: string) => toStringList(value, `${field} in ${path}`);
+  config.claude.remoteRepos = list(config.claude.remoteRepos, "claude.remoteRepos");
+  config.filters.ignoredBots = list(config.filters.ignoredBots, "filters.ignoredBots");
+  config.filters.mutedTeams = list(config.filters.mutedTeams, "filters.mutedTeams");
+  config.filters.excludeRepos = list(config.filters.excludeRepos, "filters.excludeRepos");
+  return config;
+}
+
+/** Accepts a bare string as a one-item list; spreading it would otherwise split it into characters. */
+function toStringList(value: unknown, field: string): string[] {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value) && value.every((v) => typeof v === "string")) return value;
+  throw new Error(`Invalid config: ${field} must be a string or an array of strings.`);
 }

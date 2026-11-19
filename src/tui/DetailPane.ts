@@ -62,6 +62,39 @@ function reviewSection(job: ReviewJob | undefined, pr: ClassifiedPR, now: number
 
 const firstLine = (text: string) => text.split(/\r?\n/, 1)[0]!;
 
+const COMMIT_LINES = 5;
+/** Border plus horizontal padding. */
+const PANE_CHROME_WIDTH = 4;
+
+/** Newest first; commits up to the viewer's last-reviewed one are dimmed and later ones get a yellow oid. */
+function commitsSection(pr: ClassifiedPR, width: number, now: number): React.ReactNode {
+  if (!pr.commits.length) return null;
+  const reviewedIdx = pr.lastReviewedCommitOid ? pr.commits.findIndex((c) => c.oid === pr.lastReviewedCommitOid) : -1;
+  const recent = pr.commits
+    .map((c, i) => ({ c, reviewed: reviewedIdx >= 0 && i <= reviewedIdx, isNew: reviewedIdx >= 0 && i > reviewedIdx }))
+    .slice(-COMMIT_LINES)
+    .reverse();
+  const inner = width - PANE_CHROME_WIDTH;
+
+  return h(
+    Box,
+    { flexDirection: "column", marginTop: 1 },
+    h(Text, { dimColor: true }, `Commits (${pr.commitCount})`),
+    ...recent.map(({ c, reviewed, isNew }) => {
+      const oid = c.oid.slice(0, 7);
+      const age = ` · ${relativeTime(c.committedAt, now)}`;
+      const headline = truncate(c.headline, Math.max(inner - oid.length - 1 - age.length, 8));
+      return h(
+        Text,
+        { key: c.oid, dimColor: reviewed, wrap: "truncate-end" },
+        h(Text, { color: isNew ? "yellow" : undefined, dimColor: !isNew }, oid),
+        ` ${headline}`,
+        h(Text, { dimColor: true }, age),
+      );
+    }),
+  );
+}
+
 export function DetailPane({ row, width, height, now, job }: DetailPaneProps) {
   const frame = (...children: React.ReactNode[]) =>
     h(
@@ -121,5 +154,6 @@ export function DetailPane({ row, width, height, now, job }: DetailPaneProps) {
             .map((line, i) => h(Text, { key: `snip-${i}`, wrap: "truncate-end" }, truncate(line, 200))),
         )
       : null,
+    commitsSection(pr, width, now),
   );
 }

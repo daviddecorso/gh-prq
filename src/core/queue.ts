@@ -1,7 +1,8 @@
+import { createHash } from "node:crypto";
 import { readCache, writeCache } from "./cache.ts";
 import { classifyPR } from "./classifier.ts";
 import type { Config } from "./config.ts";
-import { fetchSnapshot, GhAuthError, type Scope } from "./github.ts";
+import { fetchSnapshot, getGhToken, GhAuthError, type Scope } from "./github.ts";
 import { BUCKET_ORDER, type ClassifiedPR, type QueueResult, type QueueSnapshot } from "./types.ts";
 
 export interface LoadQueueOptions extends Scope {
@@ -40,7 +41,13 @@ export function classifySnapshot(
     .sort(compareItems);
 }
 
-const cacheKeyFor = (opts: Scope) => JSON.stringify({ repo: opts.repo ?? null, org: opts.org ?? null });
+/** Keyed by a token hash so switching `gh auth` accounts never serves another account's queue. */
+const cacheKeyFor = (opts: Scope, token: string) =>
+  JSON.stringify({
+    account: createHash("sha256").update(token).digest("hex").slice(0, 16),
+    repo: opts.repo ?? null,
+    org: opts.org ?? null,
+  });
 
 function toResult(snapshot: QueueSnapshot, opts: LoadQueueOptions, staleReason?: string): QueueResult {
   return {
@@ -54,21 +61,29 @@ function toResult(snapshot: QueueSnapshot, opts: LoadQueueOptions, staleReason?:
 
 /** The last cached queue at any age, without touching the network. */
 export function loadCachedQueue(opts: LoadQueueOptions): QueueResult | null {
-  const snapshot = readCache(cacheKeyFor(opts), Infinity);
+  let token: string;
+  try {
+    token = getGhToken();
+  } catch {
+    return null;
+  }
+  const snapshot = readCache(cacheKeyFor(opts, token), Infinity);
   return snapshot ? toResult(snapshot, opts) : null;
 }
 
 /** Fetches (or reads from cache) and classifies the viewer's queue. Falls back to a stale cache when offline. */
 export async function loadQueue(opts: LoadQueueOptions): Promise<QueueResult> {
-  const cacheKey = cacheKeyFor(opts);
+  const token = getGhToken();
+  const cacheKey = cacheKeyFor(opts, token);
 
   let snapshot = opts.refresh ? null : readCache(cacheKey, opts.config.ui.cacheTtlSeconds);
   let staleReason: string | undefined;
 
   if (!snapshot) {
     try {
-      snapshot = await fetchSnapshot({ repo: opts.repo, org: opts.org });
-      writeCache(cacheKey, snapshot);
+      snapshot = await fetchSnapshot({ repo: opts.repo, org: opts.org }, token);
+      // Warnings describe this fetch only; caching them would repeat them on every cached run.
+      writeCache(cacheKey, { ...snapshot, warnings: [] });
     } catch (err) {
       const stale = err instanceof GhAuthError ? null : readCache(cacheKey, Infinity);
       if (!stale) throw err;

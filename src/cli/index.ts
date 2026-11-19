@@ -16,28 +16,36 @@ Usage: gh prq [flags]
   --org <org>        Scope to an organization
   --exclude <glob>   Hide repos matching a name or glob, repeatable ("legacy-*", "acme/*")
   --reviews          Only reviewer buckets
-  --mine             Only your own PRs
+  --mine             Only your own PRs (add --all for your drafts)
   --all              Include PRs you've approved and drafts
   --refresh          Bypass the local cache
   -h, --help         Show this help
 `;
 
+function parseFlags() {
+  try {
+    return parseArgs({
+      options: {
+        plain: { type: "boolean" },
+        json: { type: "boolean" },
+        repo: { type: "string" },
+        org: { type: "string" },
+        exclude: { type: "string", multiple: true },
+        reviews: { type: "boolean" },
+        mine: { type: "boolean" },
+        all: { type: "boolean" },
+        refresh: { type: "boolean" },
+        help: { type: "boolean", short: "h" },
+      },
+      strict: true,
+    }).values;
+  } catch (err) {
+    throw new Error(`${(err as Error).message}\nRun \`gh prq --help\` for usage.`);
+  }
+}
+
 async function main(): Promise<number> {
-  const { values: args } = parseArgs({
-    options: {
-      plain: { type: "boolean" },
-      json: { type: "boolean" },
-      repo: { type: "string" },
-      org: { type: "string" },
-      exclude: { type: "string", multiple: true },
-      reviews: { type: "boolean" },
-      mine: { type: "boolean" },
-      all: { type: "boolean" },
-      refresh: { type: "boolean" },
-      help: { type: "boolean", short: "h" },
-    },
-    strict: true,
-  });
+  const args = parseFlags();
 
   if (args.help) {
     process.stdout.write(HELP);
@@ -71,6 +79,12 @@ async function main(): Promise<number> {
   process.stdout.write(`${renderPlain({ ...result, items }, { color })}\n`);
   return 0;
 }
+
+// A closed downstream pipe (`gh prq | head`) isn't an error worth a stack trace.
+process.stdout.on("error", (err: NodeJS.ErrnoException) => {
+  if (err.code === "EPIPE") process.exit(0);
+  throw err;
+});
 
 main()
   .then((code) => {

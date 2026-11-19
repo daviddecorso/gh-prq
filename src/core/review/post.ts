@@ -43,6 +43,18 @@ export function toReviewPayload(
 const PENDING_EXISTS_RE = /one pending review/i;
 const UNPROCESSABLE_RE = /HTTP 422/;
 
+/** Approves the head the queue last saw, so a push made after the fetch isn't approved blind. */
+export async function approvePR(pr: ClassifiedPR, exec: Runner = run): Promise<string> {
+  const res = await exec("gh", ["api", "--method", "POST", `repos/${pr.repo}/pulls/${pr.number}/reviews`, "--input", "-"], {
+    input: JSON.stringify({ commit_id: pr.headOid, event: "APPROVE" }),
+  });
+  if (res.code !== 0 && PENDING_EXISTS_RE.test(`${res.stderr}\n${res.stdout}`)) {
+    throw new Error(`You have a pending review on ${pr.repo}#${pr.number}. Submit or discard it first.`);
+  }
+  if (res.code !== 0) throw new Error(`Approve failed: ${firstErrorLine(res)}`);
+  return `Approved ${pr.repo}#${pr.number}`;
+}
+
 /** Resolves with a footer status message; rejects with a user-facing error. */
 export async function postDraft(
   pr: ClassifiedPR,

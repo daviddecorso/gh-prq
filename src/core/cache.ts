@@ -34,9 +34,13 @@ export function readCache(key: string, maxAgeSeconds: number): QueueSnapshot | n
   return Date.now() - entry.savedAt <= maxAgeSeconds * 1000 ? entry.snapshot : null;
 }
 
+const MAX_ENTRY_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
 export function writeCache(key: string, snapshot: QueueSnapshot): void {
-  const all = readAll();
-  all[key] = { savedAt: Date.now(), snapshot };
+  const now = Date.now();
+  // Drops entries for rotated tokens and abandoned scopes so the file doesn't grow forever.
+  const all = Object.fromEntries(Object.entries(readAll()).filter(([, e]) => now - e.savedAt < MAX_ENTRY_AGE_MS));
+  all[key] = { savedAt: now, snapshot };
   mkdirSync(cacheDir(), { recursive: true });
   const tmp = `${cacheFile()}.${process.pid}.tmp`;
   writeFileSync(tmp, JSON.stringify(all));

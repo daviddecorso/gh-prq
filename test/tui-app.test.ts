@@ -5,6 +5,8 @@ import type { ClassifiedPR, QueueResult } from "../src/core/types.ts";
 import type { ReviewDraft } from "../src/core/review/schema.ts";
 import type { Actions } from "../src/tui/actions.ts";
 import { App } from "../src/tui/App.ts";
+import { DetailPane } from "../src/tui/DetailPane.ts";
+import type { Row } from "../src/tui/model.ts";
 import type { Reviewer } from "../src/tui/useReviews.ts";
 import { item, result } from "./fixtures.ts";
 
@@ -28,7 +30,9 @@ function setup(
     open: vi.fn((pr: ClassifiedPR) => `Opened ${pr.id}`),
     openFiles: vi.fn(),
     copy: vi.fn((pr: ClassifiedPR) => `Copied ${pr.id}`),
+    approve: vi.fn(async (pr: ClassifiedPR) => `Approved ${pr.id}`),
     checkoutBlocker: vi.fn(() => null),
+    viewDetails: vi.fn(() => null),
     ...actionOverrides,
   };
   const reviewer: Reviewer = {
@@ -83,6 +87,26 @@ describe("App", () => {
     expect(frame).toContain("PR PR1");
     expect(frame).toContain("▸ WAITING ON AUTHOR (1)");
     expect(frame).not.toContain("PR PR3");
+  });
+
+  test("lists recent commits newest first in the detail pane", async () => {
+    const at = (h: number) => new Date(Date.UTC(2026, 0, 1, h)).toISOString();
+    const pr = item("PR1", "NEEDS_REREVIEW", {
+      lastReviewedCommitOid: "aaaaaaa111",
+      commitCount: 12,
+      commits: [
+        { oid: "aaaaaaa111", headline: "Add retry", committedAt: at(1) },
+        { oid: "bbbbbbb222", headline: "Fix flaky test", committedAt: at(2) },
+      ],
+    });
+    const app = render(
+      React.createElement(DetailPane, { row: { kind: "pr", pr } as Row, width: 80, height: 30, now: Date.UTC(2026, 0, 2), job: undefined }),
+    );
+    cleanup = app.unmount;
+    const frame = app.lastFrame()!;
+    expect(frame).toContain("Commits (12)");
+    expect(frame.indexOf("bbbbbbb Fix flaky test")).toBeGreaterThan(-1);
+    expect(frame.indexOf("bbbbbbb")).toBeLessThan(frame.indexOf("aaaaaaa Add retry"));
   });
 
   test("shows the cached queue while the first load is in flight", async () => {
@@ -169,6 +193,43 @@ describe("App", () => {
     await tick();
     expect(app.onCheckout).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }));
   });
+
+  test("v then y approves and refreshes; v then n doesn't", async () => {
+    const load = vi.fn(async () => queue);
+    const app = setup(load);
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "j", "v");
+    expect(app.lastFrame()).toContain("Approve acme/api#1? y/n");
+    await press(app, "n");
+    expect(app.actions.approve).not.toHaveBeenCalled();
+
+    await press(app, "v", "y");
+    expect(app.actions.approve).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }));
+    expect(app.lastFrame()).toContain("Approved PR1");
+    expect(load).toHaveBeenLastCalledWith(true);
+  });
+
+  test("v on your own PR is refused", async () => {
+    const app = setup(async () => result([item("PR1", "MY_PR_READY", { author: "me" })]));
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "j", "v");
+    expect(app.lastFrame()).toContain("You can't approve your own PR");
+    expect(app.actions.approve).not.toHaveBeenCalled();
+  });
+
+  test("a failed approve shows the error", async () => {
+    const app = setup(async () => queue, {
+      approve: vi.fn(async () => {
+        throw new Error("Approve failed: HTTP 422");
+      }),
+    });
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "j", "v", "y");
+    expect(app.lastFrame()).toContain("Approve failed: HTTP 422");
+  });
 });
 
 describe("Claude reviews", () => {
@@ -182,11 +243,20 @@ describe("Claude reviews", () => {
     expect(app.lastFrame()).toContain("◐ claude");
 
     finish(DRAFT);
-    await press(app, "d");
+    await press(app, "i");
     const frame = app.lastFrame()!;
     expect(frame).toContain("✎ draft");
     expect(frame).toContain("One race in the refresh path");
     expect(app.reviewer.saveDraft).toHaveBeenCalled();
+  });
+
+  test("d shows full details and surfaces failures", async () => {
+    const app = setup(async () => queue, { viewDetails: vi.fn(() => "no pull requests found") });
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "j", "d");
+    expect(app.actions.viewDetails).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }));
+    expect(app.lastFrame()).toContain("no pull requests found");
   });
 
   test("maxConcurrent queues extra reviews", async () => {

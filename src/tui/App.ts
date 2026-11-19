@@ -23,7 +23,7 @@ const NO_ITEMS: ClassifiedPR[] = [];
 
 const firstLine = (text: string) => text.split(/\r?\n/, 1)[0]!;
 
-const KEY_HINTS = "j/k move  space fold  o open  c checkout  a claude  A claude session  d details  r refresh  ? help  q quit";
+const KEY_HINTS = "j/k move  space fold  o open  c checkout  a claude  A claude session  v approve  d details  i info  r refresh  ? help  q quit";
 
 const HELP_LINES: [string, string][] = [
   ["j / k / ↓ / ↑", "move"],
@@ -32,10 +32,12 @@ const HELP_LINES: [string, string][] = [
   ["enter / o", "open in browser"],
   ["c", "check out (exits)"],
   ["y", "copy URL"],
-  ["d", "toggle details"],
+  ["d", "full details: gh pr view and review comments"],
+  ["i", "toggle the info pane"],
   ["a", "Claude drafts a review in the background"],
   ["A", "interactive Claude review session (exits)"],
   ["p", "post the draft as a pending GitHub review"],
+  ["v", "approve"],
   ["x", "cancel the review or discard the draft"],
   ["r", "refresh"],
   ["q / esc", "quit"],
@@ -108,6 +110,7 @@ export function App({
   const [status, setStatus] = useStatus();
   const [confirm, setConfirm] = React.useState<Confirm | null>(null);
   const [quitArmed, setQuitArmed] = React.useState(false);
+  const approving = React.useRef(new Set<string>());
 
   const [collapsed, setCollapsed] = React.useState<ReadonlySet<BucketId>>(
     () => new Set(collapseWaitingByDefault ? WAITING_BUCKETS : []),
@@ -200,7 +203,13 @@ export function App({
     if (input === "g") return select(0);
     if (input === "G") return select(rows.length - 1);
     if (input === " " || key.tab) return toggleFold();
-    if (input === "d") return setShowDetail((v) => !v);
+    if (input === "i") return setShowDetail((v) => !v);
+    if (input === "d") {
+      return withPR((pr) => {
+        const err = actions.viewDetails(pr);
+        if (err) setStatus(err);
+      });
+    }
     if (input === "?") return setShowHelp(true);
     if (input === "r") return queue.refresh();
     if (input === "o" || key.return) return withPR((pr) => setStatus(actions.open(pr)));
@@ -235,6 +244,28 @@ export function App({
             if (posted) actions.openFiles(pr);
           }),
         );
+      });
+    }
+    if (input === "v") {
+      return withPR((pr) => {
+        if (pr.author === queue.result?.viewer) return setStatus("You can't approve your own PR");
+        if (approving.current.has(pr.id)) return setStatus(`Already approving ${ref(pr)}`);
+        // Always asks: an approval is public the moment it lands, unlike a pending review.
+        setConfirm({
+          prompt: `Approve ${ref(pr)}? y/n`,
+          onYes: () => {
+            approving.current.add(pr.id);
+            setStatus(`Approving ${ref(pr)}…`);
+            actions
+              .approve(pr)
+              .then((msg) => {
+                setStatus(msg);
+                queue.refresh();
+              })
+              .catch((err: Error) => setStatus(err.message))
+              .finally(() => approving.current.delete(pr.id));
+          },
+        });
       });
     }
     if (input === "x") {

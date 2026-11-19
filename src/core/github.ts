@@ -93,6 +93,10 @@ fragment PRFields on PullRequest {
       }
     }
   }
+  recentCommits: commits(last: 10) {
+    totalCount
+    nodes { commit { oid messageHeadline committedDate } }
+  }
   reviewRequests(first: 20) {
     nodes {
       requestedReviewer {
@@ -163,6 +167,10 @@ interface RawPR {
         statusCheckRollup: { state: string; contexts: { nodes: RawCheckContext[] } } | null;
       };
     }[];
+  };
+  recentCommits: {
+    totalCount: number;
+    nodes: { commit: { oid: string; messageHeadline: string; committedDate: string } }[];
   };
   reviewRequests: {
     nodes: { requestedReviewer: { login?: string; combinedSlug?: string } | null }[];
@@ -245,6 +253,8 @@ export function normalizePR(raw: RawPR, viewerReviewRequested: boolean): Normali
     deletions: raw.deletions,
     headOid: raw.headRefOid,
     latestCommitAt: commit?.pushedDate ?? commit?.committedDate ?? null,
+    commits: raw.recentCommits.nodes.map(({ commit: c }) => ({ oid: c.oid, headline: c.messageHeadline, committedAt: c.committedDate })),
+    commitCount: raw.recentCommits.totalCount,
     ciState: toCiState(rollup?.state),
     failedChecks,
     requestedUsers,
@@ -278,6 +288,9 @@ async function graphql<T>(query: string, variables: object, token: string): Prom
     body: JSON.stringify({ query, variables }),
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
+  if (res.status === 401) {
+    throw new GhAuthError("GitHub rejected the CLI's token. Run `gh auth login` and try again.");
+  }
   if (!res.ok) throw new Error(`GitHub API returned ${res.status} ${res.statusText}`.trim());
 
   const body = (await res.json()) as { data?: T | null; errors?: { message: string }[] };
@@ -291,13 +304,17 @@ async function searchIds(q: string, token: string): Promise<{ viewer: string; id
   const warnings: string[] = [];
   let viewer = "";
   let after: string | null = null;
-  for (let page = 0; page < MAX_SEARCH_PAGES; page++) {
+  for (let page = 0; ; page++) {
     const res: { data: RawIdSearch; warnings: string[] } = await graphql<RawIdSearch>(ID_SEARCH_QUERY, { q, after }, token);
     viewer ||= res.data.viewer?.login ?? "";
     warnings.push(...res.warnings);
     for (const node of res.data.search?.nodes ?? []) if (node?.id) ids.push(node.id);
     const pageInfo = res.data.search?.pageInfo;
     if (!pageInfo?.hasNextPage) break;
+    if (page + 1 >= MAX_SEARCH_PAGES) {
+      warnings.push(`"${q}" matched more than ${ids.length} PRs; showing the first ${ids.length}. Narrow with --repo or --org.`);
+      break;
+    }
     after = pageInfo.endCursor;
   }
   if (!viewer) throw new Error(warnings.join("; ") || "Empty GraphQL response");

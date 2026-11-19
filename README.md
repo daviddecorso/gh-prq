@@ -35,7 +35,7 @@ gh prq --plain
 
 In the TUI, `a` has Claude Code (`claude` on your PATH) draft a review in the background. `A` exits into an interactive `claude` session seeded with the same context. If the cwd is a clone of the PR's repo, Claude gets a throwaway `git worktree` at the PR head. Otherwise it only sees the diff via `gh`. Re-reviews look at the commits since your last review and report whether each of your open threads was addressed.
 
-A finished draft shows in the details pane (`d`). `p` posts it as a pending GitHub review (it isn't submitted, so you can edit it in the browser first), and `x` cancels or discards. Drafts persist in `~/.cache/gh-prq/drafts/` across restarts. Config: `claude.model` (default `sonnet`), `claude.maxConcurrent` (default 2), `claude.confirmBeforePosting` (default true).
+A finished draft shows in the info pane (`i`). `p` posts it as a pending GitHub review (it isn't submitted, so you can edit it in the browser first), and `x` cancels or discards. Drafts persist in `~/.cache/gh-prq/drafts/` across restarts. Config: `claude.model` (default `sonnet`), `claude.maxConcurrent` (default 2), `claude.confirmBeforePosting` (default true).
 
 ## Status
 

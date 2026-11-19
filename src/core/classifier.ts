@@ -101,6 +101,8 @@ export function classifyPR(
     deletions: pr.deletions,
     headOid: pr.headOid,
     lastReviewedCommitOid: extra.lastReviewedCommitOid ?? null,
+    commits: pr.commits ?? [],
+    commitCount: pr.commitCount ?? pr.commits?.length ?? 0,
     ...(extra.snippet ? { latestReplySnippet: extra.snippet } : {}),
     viewerThreads,
     badges,

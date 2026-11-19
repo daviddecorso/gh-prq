@@ -46,6 +46,12 @@ export interface Comment {
   createdAt: string;
 }
 
+export interface CommitSummary {
+  oid: string;
+  headline: string;
+  committedAt: string;
+}
+
 export interface Review {
   author: string;
   state: ReviewState;
@@ -78,6 +84,9 @@ export interface NormalizedPR {
   deletions: number;
   headOid: string;
   latestCommitAt: string | null;
+  /** The last 10 commits, oldest first. Missing in snapshots cached before this field existed. */
+  commits?: CommitSummary[];
+  commitCount?: number;
   ciState: CiState;
   failedChecks: string[];
   requestedUsers: string[];
@@ -120,6 +129,9 @@ export interface ClassifiedPR {
   deletions: number;
   headOid: string;
   lastReviewedCommitOid: string | null;
+  /** Oldest first; may be the tail of a longer history (see `commitCount`). */
+  commits: CommitSummary[];
+  commitCount: number;
   latestReplySnippet?: {
     author: string;
     body: string;

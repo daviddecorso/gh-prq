@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { DEFAULT_CONFIG } from "../src/core/config.ts";
 import type { RunOptions, RunResult } from "../src/core/exec.ts";
-import { postDraft, toReviewPayload } from "../src/core/review/post.ts";
+import { approvePR, postDraft, toReviewPayload } from "../src/core/review/post.ts";
 import { buildReviewPrompt } from "../src/core/review/prompt.ts";
 import { ALLOWED_TOOLS, runHeadlessReview } from "../src/core/review/runner.ts";
 import type { ReviewDraft } from "../src/core/review/schema.ts";
@@ -252,5 +252,26 @@ describe("posting", () => {
     const exec = fakeExec([["gh", ["api"], fail("User can only have one pending review per pull request (HTTP 422)")]]);
     await expect(postDraft(pr, DRAFT, exec)).rejects.toThrow("already have a pending review");
     expect(exec).toHaveBeenCalledTimes(1);
+  });
+
+  test("approve submits an APPROVE review on the head commit", async () => {
+    let body: unknown;
+    const exec = fakeExec([
+      [
+        "gh",
+        ["api"],
+        (_args, opts) => {
+          body = JSON.parse(opts!.input!);
+          return ok("{}");
+        },
+      ],
+    ]);
+    expect(await approvePR(pr, exec)).toBe("Approved acme/api#7");
+    expect(body).toEqual({ commit_id: "abc", event: "APPROVE" });
+  });
+
+  test("approve reports a blocking pending review", async () => {
+    const exec = fakeExec([["gh", ["api"], fail("User can only have one pending review per pull request (HTTP 422)")]]);
+    await expect(approvePR(pr, exec)).rejects.toThrow("pending review on acme/api#7");
   });
 });

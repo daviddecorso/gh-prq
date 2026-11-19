@@ -7,7 +7,7 @@ import {
   type CiState,
   type QueueResult,
 } from "../core/types.ts";
-import { CI_STYLE, relativeTime, truncate } from "../core/format.ts";
+import { CI_STYLE, padEndDisplay, relativeTime, truncate } from "../core/format.ts";
 
 const TITLE_WIDTH = 50;
 
@@ -55,7 +55,7 @@ export function renderPlain(result: QueueResult, opts: { color: boolean; now?: n
         [
           " ",
           ref(pr).padEnd(refWidth),
-          truncate(pr.title, TITLE_WIDTH).padEnd(TITLE_WIDTH),
+          padEndDisplay(truncate(pr.title, TITLE_WIDTH), TITLE_WIDTH),
           paint.dim(diff(pr).padEnd(diffWidth)),
           ciGlyph(pr.ciState),
           `${pr.reason} ${paint.dim(`· ${relativeTime(pr.actionSince, now)}`)}${badges}`,
