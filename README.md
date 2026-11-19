@@ -4,18 +4,6 @@ Turn-based pull request queue for the GitHub CLI. Answers "whose turn is it?" fo
 
 <img width="1077" height="331" alt="image" src="https://github.com/user-attachments/assets/d40dfb4e-5464-4acc-8e0e-66118b081469" />
 
-
-## Develop
-
-Requires Node 22.18+ (runs the TypeScript directly, no build step).
-
-```sh
-npm install
-npm test
-npm run typecheck
-node src/cli/index.ts --plain
-```
-
 ## Install
 
 Requires the GitHub CLI and Node 22.18+.
@@ -28,6 +16,17 @@ gh prq
 The first run (and the first run after `gh extension upgrade prq`) installs dependencies with `npm ci`.
 
 To install from a local checkout, run `gh extension install .` (the directory must be named `gh-prq`).
+
+## Develop
+
+Requires Node 22.18+ (runs the TypeScript directly, no build step).
+
+```sh
+npm install
+npm test
+npm run typecheck
+node src/cli/index.ts --plain
+```
 
 ## Layout
 
