@@ -1,4 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# gh extension install/upgrade only clones or pulls, so dependencies are synced here.
+STAMP="$DIR/node_modules/.gh-prq-lock"
+if ! cmp -s "$DIR/package-lock.json" "$STAMP" 2>/dev/null; then
+  echo "gh-prq: installing dependencies..." >&2
+  (cd "$DIR" && npm ci --omit=dev --no-audit --no-fund --loglevel=error) >&2
+  cp "$DIR/package-lock.json" "$STAMP"
+fi
+
 exec node "$DIR/src/cli/index.ts" "$@"
