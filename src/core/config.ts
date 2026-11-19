@@ -1,12 +1,20 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { AGENT_IDS, type AgentId } from "./review/agents.ts";
+
+/** The pre-`agent` config block, still read so existing config files keep working. */
+interface LegacyClaudeConfig {
+  model?: string;
+  confirmBeforePosting?: boolean;
+  maxConcurrent?: number;
+}
 
 export interface Config {
-  claude: {
-    mode: "local" | "remote";
-    model: string;
-    remoteRepos: string[];
+  agent: {
+    default: AgentId;
+    /** A missing entry uses the CLI's own default model. */
+    models: Partial<Record<AgentId, string>>;
     confirmBeforePosting: boolean;
     /** Headless reviews that run at once; the rest queue. */
     maxConcurrent: number;
@@ -28,10 +36,9 @@ export interface Config {
 }
 
 export const DEFAULT_CONFIG: Config = {
-  claude: {
-    mode: "local",
-    model: "sonnet",
-    remoteRepos: [],
+  agent: {
+    default: "claude",
+    models: { claude: "sonnet" },
     confirmBeforePosting: true,
     maxConcurrent: 2,
   },
@@ -65,20 +72,33 @@ export function configPath(): string {
 export function loadConfig(path = configPath()): Config {
   if (!existsSync(path)) return DEFAULT_CONFIG;
 
-  let user: Partial<{ [K in keyof Config]: Partial<Config[K]> }>;
+  let user: Partial<{ [K in keyof Config]: Partial<Config[K]> }> & { claude?: LegacyClaudeConfig };
   try {
     user = JSON.parse(readFileSync(path, "utf8"));
   } catch (err) {
     throw new Error(`Invalid config at ${path}: ${(err as Error).message}`);
   }
 
+  const { model: legacyModel, confirmBeforePosting, maxConcurrent } = user.claude ?? {};
   const config: Config = {
-    claude: { ...DEFAULT_CONFIG.claude, ...user.claude },
+    agent: {
+      ...DEFAULT_CONFIG.agent,
+      ...(confirmBeforePosting !== undefined && { confirmBeforePosting }),
+      ...(maxConcurrent !== undefined && { maxConcurrent }),
+      ...user.agent,
+      models: {
+        ...DEFAULT_CONFIG.agent.models,
+        ...(legacyModel !== undefined && { claude: legacyModel }),
+        ...user.agent?.models,
+      },
+    },
     filters: { ...DEFAULT_CONFIG.filters, ...user.filters },
     ui: { ...DEFAULT_CONFIG.ui, ...user.ui },
   };
+  if (!(AGENT_IDS as readonly string[]).includes(config.agent.default)) {
+    throw new Error(`Invalid config: agent.default in ${path} must be one of ${AGENT_IDS.join(", ")}.`);
+  }
   const list = (value: unknown, field: string) => toStringList(value, `${field} in ${path}`);
-  config.claude.remoteRepos = list(config.claude.remoteRepos, "claude.remoteRepos");
   config.filters.ignoredBots = list(config.filters.ignoredBots, "filters.ignoredBots");
   config.filters.mutedTeams = list(config.filters.mutedTeams, "filters.mutedTeams");
   config.filters.excludeRepos = list(config.filters.excludeRepos, "filters.excludeRepos");

@@ -3,6 +3,8 @@ import React from "react";
 import { relativeTime } from "../core/format.ts";
 import { ACTIONABLE_BUCKETS, WAITING_BUCKETS, type BucketId, type ClassifiedPR, type QueueResult } from "../core/types.ts";
 import type { Config } from "../core/config.ts";
+import { AGENT_IDS, type Agent } from "../core/review/agents.ts";
+import { EVENT_FOR_VERDICT, type ReviewEvent } from "../core/review/post.ts";
 import type { Actions } from "./actions.ts";
 import { DetailPane } from "./DetailPane.ts";
 import { adjacentHeader, bucketOfRow, buildRows, clampCursor, keyHints, restoreCursor, rowKey, scrollWindow } from "./model.ts";
@@ -25,6 +27,13 @@ const NO_ITEMS: ClassifiedPR[] = [];
 const firstLine = (text: string) => text.split(/\r?\n/, 1)[0]!;
 const ref = (pr: ClassifiedPR) => `${pr.repo}#${pr.number}`;
 
+const POST_CHOICES: readonly { key: string; event: ReviewEvent; label: string }[] = [
+  { key: "c", event: "COMMENT", label: "comment" },
+  { key: "a", event: "APPROVE", label: "approve" },
+  { key: "r", event: "REQUEST_CHANGES", label: "request changes" },
+  { key: "p", event: "PENDING", label: "pending" },
+];
+
 const HELP_LINES: [string, string][] = [
   ["j / k / ↓ / ↑", "move"],
   ["ctrl-d/u pgdn/up", "half page / full page"],
@@ -35,11 +44,12 @@ const HELP_LINES: [string, string][] = [
   ["/", "filter by repo, title, or @author (esc clears)"],
   ["c", "check out (exits)"],
   ["y", "copy URL"],
-  ["d", "full details, with the Claude draft first if there is one"],
+  ["d", "full details, with the review draft first if there is one"],
   ["i", "toggle the info pane"],
-  ["a", "Claude drafts a review in the background"],
-  ["A", "interactive Claude review session (exits)"],
-  ["p", "post the draft as a pending GitHub review"],
+  ["a", "the active agent drafts a review in the background"],
+  ["A", "interactive review session with the active agent (exits)"],
+  ["m", "switch the active agent"],
+  ["p", "post the draft: comment, approve, request changes, or pending"],
   ["v", "approve"],
   ["x", "cancel the review or discard the draft"],
   ["r", "refresh"],
@@ -51,17 +61,22 @@ export interface AppProps {
   initial?: QueueResult | null;
   actions: Actions;
   reviewer: Reviewer;
-  claude: Pick<Config["claude"], "maxConcurrent" | "confirmBeforePosting">;
+  review: Pick<Config["agent"], "maxConcurrent" | "confirmBeforePosting">;
+  /** Installed agents; the first is active at startup. */
+  agents: readonly Agent[];
   collapseWaitingByDefault: boolean;
   autoRefreshSeconds: number;
   onCheckout: (pr: ClassifiedPR) => void;
-  onHandoff: (pr: ClassifiedPR) => void;
+  onHandoff: (pr: ClassifiedPR, agent: Agent) => void;
 }
 
 interface Confirm {
   prompt: string;
-  onYes: () => void;
+  /** Keyed by input character, or "enter". Any other key cancels. */
+  choices: Record<string, () => void>;
 }
+
+const yesNo = (prompt: string, onYes: () => void): Confirm => ({ prompt, choices: { y: onYes, Y: onYes } });
 
 function useTerminalSize() {
   const { stdout } = useStdout();
@@ -106,7 +121,8 @@ export function App({
   initial,
   actions,
   reviewer,
-  claude,
+  review,
+  agents,
   collapseWaitingByDefault,
   autoRefreshSeconds,
   onCheckout,
@@ -117,12 +133,15 @@ export function App({
   const now = useNow();
   const queue = useQueue(load, autoRefreshSeconds, initial);
   const { status, info, error } = useStatus();
-  const onReviewSettled: ReviewSettled = (pr, outcome) => {
+  const onReviewSettled: ReviewSettled = (pr, agent, outcome) => {
     actions.bell();
-    if (outcome.ok) info(`Claude draft ready for ${ref(pr)} (d to read)`);
-    else error(`Claude review failed for ${ref(pr)}: ${firstLine(outcome.error)}`);
+    if (outcome.ok) info(`${agent.label} draft ready for ${ref(pr)} (d to read)`);
+    else error(`${agent.label} review failed for ${ref(pr)}: ${firstLine(outcome.error)}`);
   };
-  const reviews = useReviews(reviewer, claude.maxConcurrent, onReviewSettled);
+  const reviews = useReviews(reviewer, review.maxConcurrent, onReviewSettled);
+  const [agentIndex, setAgentIndex] = React.useState(0);
+  const activeAgent = agents[agentIndex];
+  const canSwitchAgent = agents.length > 1;
   const [confirm, setConfirm] = React.useState<Confirm | null>(null);
   const [quitArmed, setQuitArmed] = React.useState(false);
   const approving = React.useRef(new Set<string>());
@@ -186,13 +205,17 @@ export function App({
   };
 
   const confirmThen = (prompt: string, onYes: () => void) => {
-    if (claude.confirmBeforePosting) setConfirm({ prompt, onYes });
+    if (review.confirmBeforePosting) setConfirm(yesNo(prompt, onYes));
     else onYes();
   };
   const runningGuard = (what: string) =>
     reviews.activeCount > 0
-      ? `${reviews.activeCount} Claude review${reviews.activeCount === 1 ? "" : "s"} running; ${what}`
+      ? `${reviews.activeCount} review${reviews.activeCount === 1 ? "" : "s"} running; ${what}`
       : null;
+  const withAgent = (fn: (agent: Agent) => void) => {
+    if (activeAgent) fn(activeAgent);
+    else error(`No review agent found (install ${AGENT_IDS.join(", ")})`);
+  };
 
   useInput((input, key) => {
     if (showHelp) {
@@ -201,7 +224,8 @@ export function App({
     }
     if (confirm) {
       setConfirm(null);
-      if (input === "y" || input === "Y") confirm.onYes();
+      const choice = confirm.choices[key.return ? "enter" : input];
+      if (choice) choice();
       else info("Cancelled");
       return;
     }
@@ -256,7 +280,7 @@ export function App({
     if (input === "d") {
       return withPR((pr) => {
         const job = reviews.jobs.get(pr.id);
-        const err = job?.status === "ready" ? actions.viewDetails(pr, job.draft) : actions.viewDetails(pr);
+        const err = job?.status === "ready" ? actions.viewDetails(pr, job) : actions.viewDetails(pr);
         if (err) error(err);
       });
     }
@@ -274,27 +298,44 @@ export function App({
         exit();
       });
     }
-    if (input === "a") return withPR((pr) => info(reviews.start(pr)));
+    if (input === "a") return withPR((pr) => withAgent((agent) => info(reviews.start(pr, agent))));
     if (input === "A") {
-      return withPR((pr) => {
-        const guard = runningGuard("wait or cancel them (x) first");
-        if (guard) return info(guard);
-        onHandoff(pr);
-        exit();
-      });
+      return withPR((pr) =>
+        withAgent((agent) => {
+          const guard = runningGuard("wait or cancel them (x) first");
+          if (guard) return info(guard);
+          onHandoff(pr, agent);
+          exit();
+        }),
+      );
+    }
+    if (input === "m" && canSwitchAgent) {
+      const next = (agentIndex + 1) % agents.length;
+      setAgentIndex(next);
+      return info(`Reviews now use ${agents[next]!.label}`);
     }
     if (input === "p") {
       return withPR((pr) => {
         const job = reviews.jobs.get(pr.id);
         if (job?.status !== "ready") return info("No draft to post (a to start one)");
         const stale = job.headOid !== pr.headOid ? " (draft is for an older commit)" : "";
-        confirmThen(`Post a pending review on ${ref(pr)}${stale}? y/n`, () =>
-          reviews.post(pr, (msg, posted) => {
+        // GitHub rejects approving or requesting changes on your own PR.
+        const own = pr.author === queue.result?.viewer;
+        const options = POST_CHOICES.filter((c) => !own || c.event === "COMMENT" || c.event === "PENDING");
+        const suggested = options.find((c) => c.event === EVENT_FOR_VERDICT[job.draft.suggestedVerdict]) ?? options[0]!;
+        const submit = (event: ReviewEvent) =>
+          reviews.post(pr, event, (msg, posted) => {
             if (!posted) return error(msg);
             info(msg);
-            actions.openFiles(pr);
-          }),
-        );
+            if (event === "PENDING") actions.openFiles(pr);
+            else queue.refresh();
+          });
+        const choices: Confirm["choices"] = { enter: () => submit(suggested.event) };
+        for (const c of options) choices[c.key] = () => submit(c.event);
+        setConfirm({
+          prompt: `Post to ${ref(pr)}${stale}: ${options.map((c) => `${c.key} ${c.label}`).join(" · ")} · enter ${suggested.label} · esc cancel`,
+          choices,
+        });
       });
     }
     if (input === "v") {
@@ -302,9 +343,8 @@ export function App({
         if (pr.author === queue.result?.viewer) return info("You can't approve your own PR");
         if (approving.current.has(pr.id)) return info(`Already approving ${ref(pr)}`);
         // Always asks: an approval is public the moment it lands, unlike a pending review.
-        setConfirm({
-          prompt: `Approve ${ref(pr)}? y/n`,
-          onYes: () => {
+        setConfirm(
+          yesNo(`Approve ${ref(pr)}? y/n`, () => {
             approving.current.add(pr.id);
             info(`Approving ${ref(pr)}…`);
             actions
@@ -315,15 +355,15 @@ export function App({
               })
               .catch((err: Error) => error(err.message))
               .finally(() => approving.current.delete(pr.id));
-          },
-        });
+          }),
+        );
       });
     }
     if (input === "x") {
       return withPR((pr) => {
         const job = reviews.jobs.get(pr.id);
         if (!job) return info("Nothing to cancel or discard");
-        if (job.status === "ready") confirmThen(`Discard the Claude draft for ${ref(pr)}? y/n`, () => info(reviews.discard(pr)));
+        if (job.status === "ready") confirmThen(`Discard the ${job.agent.label} draft for ${ref(pr)}? y/n`, () => info(reviews.discard(pr)));
         else info(reviews.discard(pr));
       });
     }
@@ -346,7 +386,8 @@ export function App({
           `${actionable} actionable · ${waiting} waiting · updated ${relativeTime(result.fetchedAt, now)} ago`,
         )
       : null,
-    reviews.activeCount > 0 ? h(Text, { color: "magenta" }, `  ◐ ${reviews.activeCount} claude`) : null,
+    reviews.activeCount > 0 ? h(Text, { color: "magenta" }, `  ◐ ${reviews.activeCount} reviewing`) : null,
+    canSwitchAgent ? h(Text, { color: "magenta" }, `  ⇄ ${activeAgent!.id}`) : null,
     filterActive ? h(Text, { color: "cyan" }, `  filter "${filter.trim()}" · ${matchCount} match${matchCount === 1 ? "" : "es"}`) : null,
     queue.refreshing ? h(Text, { color: "yellow" }, "  refreshing…") : null,
   );
@@ -367,7 +408,7 @@ export function App({
     body = h(
       Box,
       { flexDirection: "column", height: listHeight, overflowY: "hidden", paddingX: 2 },
-      ...HELP_LINES.map(([keys, what]) => h(Text, { key: keys, wrap: "truncate-end" }, h(Text, { color: "cyan" }, keys.padEnd(18)), what)),
+      ...HELP_LINES.filter(([keys]) => keys !== "m" || canSwitchAgent).map(([keys, what]) => h(Text, { key: keys, wrap: "truncate-end" }, h(Text, { color: "cyan" }, keys.padEnd(18)), what)),
       h(Text, { dimColor: true, wrap: "truncate-end" }, "any key to close"),
     );
   } else if (queue.loading) {

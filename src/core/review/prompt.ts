@@ -1,7 +1,8 @@
 import type { ClassifiedPR } from "../types.ts";
+import { REVIEW_DRAFT_SCHEMA } from "./schema.ts";
 import type { Workspace } from "./workspace.ts";
 
-export type PromptWorkspace = Pick<Workspace, "local" | "delta">;
+export type PromptWorkspace = Pick<Workspace, "local" | "delta" | "diffPath">;
 
 const SYSTEM_PROMPT = `You're drafting a pull request review for the user, who'll edit and post it themselves.
 Never modify files, commit, push, or post anything to GitHub.
@@ -33,16 +34,18 @@ function threadsSection(pr: ClassifiedPR, interactive: boolean): string[] {
 export function buildReviewPrompt(
   pr: ClassifiedPR,
   ws: PromptWorkspace,
-  { interactive = false }: { interactive?: boolean } = {},
+  { interactive = false, inlineSchema = false }: { interactive?: boolean; inlineSchema?: boolean } = {},
 ): { prompt: string; appendSystemPrompt: string } {
+  const fullDiff = ws.diffPath ?? `\`gh pr diff ${pr.url}\``;
   const lines = [
     `Review ${pr.repo}#${pr.number} "${pr.title}" by @${pr.author} (${pr.url}), head ${pr.headOid}.`,
     ws.local
       ? "The working directory is a detached checkout of the PR head. Read surrounding code when the diff isn't enough."
-      : `There's no local checkout. Use \`gh pr diff ${pr.url}\` and \`gh pr view ${pr.url}\` for context.`,
+      : ws.diffPath
+        ? `There's no local checkout. The PR diff is in ${ws.diffPath}.`
+        : `There's no local checkout. Use \`gh pr diff ${pr.url}\` and \`gh pr view ${pr.url}\` for context.`,
   ];
 
-  const fullDiff = `\`gh pr diff ${pr.url}\``;
   const lastReviewed = pr.lastReviewedCommitOid?.slice(0, 7);
   switch (ws.delta?.kind) {
     case undefined:
@@ -68,6 +71,9 @@ export function buildReviewPrompt(
       ? "Walk me through what you find. Don't post anything to GitHub."
       : "Inline comments must target lines inside the diff: `line` is the new-file line with side RIGHT, or the old-file line with side LEFT for removed lines. Keep `summary` to a few sentences; it can be empty when the inline comments cover everything.",
   );
+  if (inlineSchema && !interactive) {
+    lines.push("", `Reply with only a JSON object matching this schema, no prose:\n${JSON.stringify(REVIEW_DRAFT_SCHEMA)}`);
+  }
 
   return { prompt: lines.join("\n"), appendSystemPrompt: SYSTEM_PROMPT };
 }

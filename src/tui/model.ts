@@ -67,6 +67,6 @@ export function keyHints(row: Row | undefined, job: ReviewJob | undefined, filte
   else if (job?.status === "queued" || job?.status === "running") middle = ["x cancel", "o open", "i info", "d details"];
   else if (job?.status === "ready") middle = ["d read draft", "p post", "x discard", "o open", "i info"];
   else if (job?.status === "failed") middle = ["a retry", "x clear", "o open", "i info"];
-  else middle = ["o open", "a claude", "v approve", "d details", "i info", "c checkout"];
+  else middle = ["o open", "a review", "v approve", "d details", "i info", "c checkout"];
   return ["? help", ...middle, ...tail].join("  ");
 }

@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -6,7 +6,8 @@ import { DEFAULT_CONFIG } from "../src/core/config.ts";
 import type { RunOptions, RunResult } from "../src/core/exec.ts";
 import { approvePR, postDraft, toReviewPayload } from "../src/core/review/post.ts";
 import { buildReviewPrompt } from "../src/core/review/prompt.ts";
-import { ALLOWED_TOOLS, runHeadlessReview } from "../src/core/review/runner.ts";
+import { AGENTS, ALLOWED_TOOLS, availableAgents, extractJson } from "../src/core/review/agents.ts";
+import { runHeadlessReview } from "../src/core/review/runner.ts";
 import type { ReviewDraft } from "../src/core/review/schema.ts";
 import { prepareWorkspace, resolveDelta, type Workspace } from "../src/core/review/workspace.ts";
 import type { ClassifiedPR } from "../src/core/types.ts";
@@ -84,6 +85,20 @@ describe("buildReviewPrompt", () => {
     expect(prompt).toContain("gh pr diff");
   });
 
+  test("a written diff file replaces gh pr diff", () => {
+    const { prompt } = buildReviewPrompt(item("PR1", "NEEDS_INITIAL_REVIEW"), { local: false, diffPath: "/ctx/pr.diff" });
+    expect(prompt).toContain("The PR diff is in /ctx/pr.diff");
+    expect(prompt).not.toContain("gh pr diff");
+  });
+
+  test("inlineSchema asks for bare JSON in headless runs only", () => {
+    const pr = item("PR1", "NEEDS_INITIAL_REVIEW");
+    expect(buildReviewPrompt(pr, { local: true }, { inlineSchema: true }).prompt).toContain('"suggestedVerdict"');
+    expect(buildReviewPrompt(pr, { local: true }, { inlineSchema: true, interactive: true }).prompt).not.toContain(
+      '"suggestedVerdict"',
+    );
+  });
+
   test("interactive prompts don't ask for structured output", () => {
     const { prompt } = buildReviewPrompt(reReview, { local: false, delta: { kind: "no-new-commits" } }, { interactive: true });
     expect(prompt).toContain("no new commits");
@@ -154,6 +169,43 @@ describe("prepareWorkspace", () => {
     expect(createWorktree).not.toHaveBeenCalled();
     ws.cleanup();
   });
+
+  test("writeDiff saves the full PR diff into the context dir", async () => {
+    const ws = await prepareWorkspace(
+      item("PR1", "NEEDS_INITIAL_REVIEW"),
+      { exec: fakeExec([["gh", ["pr", "diff"], ok("FULL DIFF")]]), remoteForRepo: () => null, createWorktree: vi.fn() },
+      undefined,
+      { writeDiff: true },
+    );
+    expect(readFileSync(ws.diffPath!, "utf8")).toBe("FULL DIFF");
+    ws.cleanup();
+  });
+
+  test("a failed diff fetch cleans up and throws", async () => {
+    await expect(
+      prepareWorkspace(
+        item("PR1", "NEEDS_INITIAL_REVIEW"),
+        { exec: fakeExec([]), remoteForRepo: () => null, createWorktree: vi.fn() },
+        undefined,
+        { writeDiff: true },
+      ),
+    ).rejects.toThrow("Couldn't fetch the PR diff");
+  });
+});
+
+describe("agents", () => {
+  test("extractJson handles bare, fenced, and wrapped replies", () => {
+    expect(extractJson('{"a":1}')).toEqual({ a: 1 });
+    expect(extractJson('```json\n{"a":1}\n```')).toEqual({ a: 1 });
+    expect(extractJson('Here you go:\n{"a":1}\nDone.')).toEqual({ a: 1 });
+    expect(() => extractJson("no json here")).toThrow("wasn't valid JSON");
+  });
+
+  test("availableAgents lists installed agents with the preferred one first", () => {
+    const installed = (bin: string) => bin !== "claude";
+    expect(availableAgents("codex", installed).map((a) => a.id)).toEqual(["codex", "gemini"]);
+    expect(availableAgents("claude", installed).map((a) => a.id)).toEqual(["gemini", "codex"]);
+  });
 });
 
 describe("runHeadlessReview", () => {
@@ -162,7 +214,10 @@ describe("runHeadlessReview", () => {
   test("runs claude read-only in the workspace and parses structured output", async () => {
     const ws = workspace();
     const exec = fakeExec([["claude", ["-p"], ok(JSON.stringify({ is_error: false, structured_output: DRAFT }))]]);
-    const draft = await runHeadlessReview(item("PR1", "NEEDS_INITIAL_REVIEW"), DEFAULT_CONFIG, { exec, prepare: async () => ws });
+    const draft = await runHeadlessReview(item("PR1", "NEEDS_INITIAL_REVIEW"), DEFAULT_CONFIG, AGENTS.claude, {
+      exec,
+      prepare: async () => ws,
+    });
 
     expect(draft).toEqual(DRAFT);
     const [, args, opts] = exec.mock.calls[0]!;
@@ -178,9 +233,64 @@ describe("runHeadlessReview", () => {
     const ws = workspace();
     const exec = fakeExec([["claude", ["-p"], { code: 1, stdout: JSON.stringify({ is_error: true, result: "rate limited" }), stderr: "" }]]);
     await expect(
-      runHeadlessReview(item("PR1", "NEEDS_INITIAL_REVIEW"), DEFAULT_CONFIG, { exec, prepare: async () => ws }),
+      runHeadlessReview(item("PR1", "NEEDS_INITIAL_REVIEW"), DEFAULT_CONFIG, AGENTS.claude, { exec, prepare: async () => ws }),
     ).rejects.toThrow("claude failed: rate limited");
     expect(ws.cleanup).toHaveBeenCalled();
+  });
+
+  test("gemini gets the diff file, the context dir, and a JSON-only prompt", async () => {
+    const ws = workspace();
+    const response = `\`\`\`json\n${JSON.stringify(DRAFT)}\n\`\`\``;
+    const exec = fakeExec([["gemini", ["--include-directories", "/ctx"], ok(JSON.stringify({ response }))]]);
+    const prepare = vi.fn(async () => ws);
+    const draft = await runHeadlessReview(item("PR1", "NEEDS_INITIAL_REVIEW"), DEFAULT_CONFIG, AGENTS.gemini, { exec, prepare });
+
+    expect(draft).toEqual(DRAFT);
+    expect(prepare).toHaveBeenCalledWith(expect.anything(), undefined, { writeDiff: true });
+    const [, args] = exec.mock.calls[0]!;
+    expect(args).not.toContain("--model");
+    expect(args.at(-1)).toContain("drafting a pull request review");
+    expect(args.at(-1)).toContain('"suggestedVerdict"');
+  });
+
+  test("gemini errors and non-JSON replies are surfaced", async () => {
+    const pr = item("PR1", "NEEDS_INITIAL_REVIEW");
+    const run = (res: RunResult) =>
+      runHeadlessReview(pr, DEFAULT_CONFIG, AGENTS.gemini, { exec: fakeExec([["gemini", [], res]]), prepare: async () => workspace() });
+    await expect(run({ code: 1, stdout: JSON.stringify({ error: { message: "quota" } }), stderr: "" })).rejects.toThrow(
+      "gemini failed: quota",
+    );
+    await expect(run(ok(JSON.stringify({ response: "Looks fine to me." })))).rejects.toThrow("gemini failed: reply wasn't valid JSON");
+  });
+
+  test("codex runs read-only with a schema file and reads the last message", async () => {
+    const ws = { ...workspace(), contextDir: tempDir() };
+    const config = { ...DEFAULT_CONFIG, agent: { ...DEFAULT_CONFIG.agent, models: { codex: "gpt-5" } } };
+    const exec = fakeExec([
+      [
+        "codex",
+        ["exec", "--sandbox", "read-only"],
+        (args) => {
+          const schemaPath = args[args.indexOf("--output-schema") + 1]!;
+          expect(JSON.parse(readFileSync(schemaPath, "utf8"))).toHaveProperty("required");
+          writeFileSync(args[args.indexOf("--output-last-message") + 1]!, JSON.stringify(DRAFT));
+          return ok();
+        },
+      ],
+    ]);
+    const draft = await runHeadlessReview(item("PR1", "NEEDS_INITIAL_REVIEW"), config, AGENTS.codex, { exec, prepare: async () => ws });
+
+    expect(draft).toEqual(DRAFT);
+    const [, args] = exec.mock.calls[0]!;
+    expect(args).toEqual(expect.arrayContaining(["--skip-git-repo-check", "--model", "gpt-5"]));
+  });
+
+  test("a failed codex run reports stderr", async () => {
+    const ws = { ...workspace(), contextDir: tempDir() };
+    const exec = fakeExec([["codex", ["exec"], fail("not logged in")]]);
+    await expect(
+      runHeadlessReview(item("PR1", "NEEDS_INITIAL_REVIEW"), DEFAULT_CONFIG, AGENTS.codex, { exec, prepare: async () => ws }),
+    ).rejects.toThrow("codex failed: not logged in");
   });
 
   test("an aborted signal skips claude and cleans up", async () => {
@@ -190,13 +300,13 @@ describe("runHeadlessReview", () => {
     const controller = new AbortController();
     controller.abort();
     await expect(
-      runHeadlessReview(item("PR1", "NEEDS_INITIAL_REVIEW"), DEFAULT_CONFIG, {
+      runHeadlessReview(item("PR1", "NEEDS_INITIAL_REVIEW"), DEFAULT_CONFIG, AGENTS.claude, {
         exec,
         prepare,
         signal: controller.signal,
       }),
     ).rejects.toThrow();
-    expect(prepare).toHaveBeenCalledWith(expect.anything(), controller.signal);
+    expect(prepare).toHaveBeenCalledWith(expect.anything(), controller.signal, { writeDiff: false });
     expect(exec).not.toHaveBeenCalled();
     expect(ws.cleanup).toHaveBeenCalled();
   });
@@ -211,6 +321,25 @@ describe("posting", () => {
     expect(payload.commit_id).toBe("abc");
     expect(payload.comments).toEqual([{ path: "src/a.ts", line: 10, side: "RIGHT", body: "We leak the timer here." }]);
     expect(payload.body).toContain("- [x] `src/b.ts`: Now awaits the lock.");
+  });
+
+  test("a submitted review carries its event and keeps the 422 fallback", async () => {
+    const bodies: unknown[] = [];
+    let calls = 0;
+    const exec = fakeExec([
+      [
+        "gh",
+        ["api"],
+        (_args, opts) => {
+          bodies.push(JSON.parse(opts!.input!));
+          return calls++ === 0 ? fail("gh: Unprocessable Entity (HTTP 422)") : ok("{}");
+        },
+      ],
+    ]);
+    const status = await postDraft(pr, DRAFT, exec, "abc", "REQUEST_CHANGES");
+    expect(status).toBe(`Requested changes on ${pr.repo}#${pr.number} (comments moved into the body)`);
+    expect(bodies[0]).toMatchObject({ event: "REQUEST_CHANGES" });
+    expect(bodies[1]).toMatchObject({ event: "REQUEST_CHANGES", comments: [] });
   });
 
   test("uses the draft's commitId when posting a stale draft", async () => {

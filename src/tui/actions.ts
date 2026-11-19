@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { remoteForRepo } from "../core/git.ts";
+import type { Agent } from "../core/review/agents.ts";
 import { approvePR } from "../core/review/post.ts";
 import type { ReviewDraft } from "../core/review/schema.ts";
 import type { ClassifiedPR } from "../core/types.ts";
@@ -11,8 +12,8 @@ export interface Actions {
   openFiles(pr: ClassifiedPR): void;
   copy(pr: ClassifiedPR): string;
   approve(pr: ClassifiedPR): Promise<string>;
-  /** Pages the Claude draft (if given), `gh pr view`, and inline review comments, blocking until the pager quits. Returns an error message or null. */
-  viewDetails(pr: ClassifiedPR, draft?: ReviewDraft): string | null;
+  /** Pages the agent's draft (if given), `gh pr view`, and inline review comments, blocking until the pager quits. Returns an error message or null. */
+  viewDetails(pr: ClassifiedPR, review?: DraftReview): string | null;
   /** `null` means the PR can be checked out from the current directory. */
   checkoutBlocker(pr: ClassifiedPR): string | null;
   bell(): void;
@@ -20,8 +21,13 @@ export interface Actions {
 
 const RULE = "-".repeat(40);
 
-export function formatDraft(draft: ReviewDraft): string {
-  const lines = ["CLAUDE DRAFT", `Suggests: ${draft.suggestedVerdict.replace("_", " ")}`, "", draft.summary.trim(), ""];
+export interface DraftReview {
+  draft: ReviewDraft;
+  agent: Agent;
+}
+
+export function formatDraft({ draft, agent }: DraftReview): string {
+  const lines = [`${agent.label.toUpperCase()} DRAFT`,`Suggests: ${draft.suggestedVerdict.replace("_", " ")}`, "", draft.summary.trim(), ""];
   if (draft.threadFollowUps.length) {
     lines.push("Your open threads:");
     for (const f of draft.threadFollowUps) lines.push(`  [${f.status.replace("_", " ")}] ${f.path}: ${f.note}`);
@@ -85,9 +91,9 @@ export const defaultActions: Actions = {
 
   approve: (pr) => approvePR(pr),
 
-  viewDetails(pr, draft) {
+  viewDetails(pr, review) {
     const view = ghText(["pr", "view", pr.url]);
-    if (!view.ok && !draft) return view.text.split(/\r?\n/, 1)[0]!;
+    if (!view.ok && !review) return view.text.split(/\r?\n/, 1)[0]!;
     let detailsText: string;
     if (!view.ok) {
       detailsText = `Couldn't load PR details: ${view.text}\n`;
@@ -100,7 +106,7 @@ export const defaultActions: Actions = {
           : "No inline review comments.\n";
       detailsText = `${view.text}\n\nREVIEW COMMENTS\n${commentsText}`;
     }
-    const draftText = draft ? `${formatDraft(draft)}\n${"=".repeat(40)}\n\n` : "";
+    const draftText = review ? `${formatDraft(review)}\n${"=".repeat(40)}\n\n` : "";
     // Pinned LESS so a user's -F/-X can't print into the main screen and corrupt Ink's frame.
     const res = spawnSync("less", [], {
       input: `${draftText}${detailsText}`,

@@ -1,40 +1,49 @@
 import React from "react";
+import { AGENTS, type Agent } from "../core/review/agents.ts";
 import type { SavedDraft } from "../core/review/drafts.ts";
+import type { ReviewEvent } from "../core/review/post.ts";
 import type { ReviewDraft } from "../core/review/schema.ts";
 import type { ClassifiedPR } from "../core/types.ts";
 
 export interface Reviewer {
-  run(pr: ClassifiedPR, signal: AbortSignal): Promise<ReviewDraft>;
+  run(pr: ClassifiedPR, agent: Agent, signal: AbortSignal): Promise<ReviewDraft>;
   /** Resolves with a status message. */
-  post(pr: ClassifiedPR, draft: ReviewDraft, headOid: string): Promise<string>;
+  post(pr: ClassifiedPR, draft: ReviewDraft, headOid: string, event: ReviewEvent): Promise<string>;
   loadDrafts(): SavedDraft[];
   saveDraft(pr: ClassifiedPR, saved: SavedDraft): void;
   removeDraft(pr: ClassifiedPR): void;
 }
 
-export type ReviewJob =
+export type ReviewJob = { agent: Agent } & (
   | { status: "queued" | "running"; pr: ClassifiedPR; startedAt: number }
   | { status: "failed"; pr: ClassifiedPR; error: string }
-  | { status: "ready" | "posting"; headOid: string; draft: ReviewDraft };
+  | { status: "ready" | "posting"; headOid: string; draft: ReviewDraft }
+);
 
 export interface ReviewsState {
   jobs: ReadonlyMap<string, ReviewJob>;
   activeCount: number;
-  start(pr: ClassifiedPR): string;
+  start(pr: ClassifiedPR, agent: Agent): string;
   /** Cancels a queued/running job or discards a draft or failure. */
   discard(pr: ClassifiedPR): string;
-  post(pr: ClassifiedPR, onDone: (status: string, posted: boolean) => void): void;
+  post(pr: ClassifiedPR, event: ReviewEvent, onDone: (status: string, posted: boolean) => void): void;
   abortAll(): void;
 }
 
 const isActive = (job: ReviewJob | undefined) => job?.status === "queued" || job?.status === "running";
 
-export type ReviewSettled = (pr: ClassifiedPR, outcome: { ok: true } | { ok: false; error: string }) => void;
+export type ReviewSettled = (pr: ClassifiedPR, agent: Agent, outcome: { ok: true } | { ok: false; error: string }) => void;
 
 /** `onSettled` fires when a background run finishes or fails, not when it's cancelled. */
 export function useReviews(reviewer: Reviewer, maxConcurrent: number, onSettled?: ReviewSettled): ReviewsState {
   const [jobs, setJobs] = React.useState<ReadonlyMap<string, ReviewJob>>(
-    () => new Map(reviewer.loadDrafts().map((s) => [s.prId, { status: "ready", headOid: s.headOid, draft: s.draft }])),
+    () =>
+      new Map(
+        reviewer.loadDrafts().map((s) => [
+          s.prId,
+          { status: "ready", agent: AGENTS[s.agent ?? "claude"] ?? AGENTS.claude, headOid: s.headOid, draft: s.draft },
+        ]),
+      ),
   );
   const controllers = React.useRef(new Map<string, AbortController>());
   const settledRef = React.useRef(onSettled);
@@ -55,22 +64,22 @@ export function useReviews(reviewer: Reviewer, maxConcurrent: number, onSettled?
       if (running >= maxConcurrent) break;
       if (job.status !== "queued") continue;
       running++;
-      const { pr } = job;
+      const { pr, agent } = job;
       const controller = new AbortController();
       controllers.current.set(id, controller);
-      update(id, { status: "running", pr, startedAt: Date.now() });
+      update(id, { status: "running", agent, pr, startedAt: Date.now() });
       reviewer
-        .run(pr, controller.signal)
+        .run(pr, agent, controller.signal)
         .then((draft) => {
           if (controller.signal.aborted) return;
-          reviewer.saveDraft(pr, { prId: pr.id, headOid: pr.headOid, createdAt: new Date().toISOString(), draft });
-          update(id, { status: "ready", headOid: pr.headOid, draft });
-          settledRef.current?.(pr, { ok: true });
+          reviewer.saveDraft(pr, { prId: pr.id, headOid: pr.headOid, createdAt: new Date().toISOString(), agent: agent.id, draft });
+          update(id, { status: "ready", agent, headOid: pr.headOid, draft });
+          settledRef.current?.(pr, agent, { ok: true });
         })
         .catch((err: Error) => {
           if (controller.signal.aborted) return;
-          update(id, { status: "failed", pr, error: err.message });
-          settledRef.current?.(pr, { ok: false, error: err.message });
+          update(id, { status: "failed", agent, pr, error: err.message });
+          settledRef.current?.(pr, agent, { ok: false, error: err.message });
         })
         .finally(() => {
           if (controllers.current.get(id) === controller) controllers.current.delete(id);
@@ -83,12 +92,12 @@ export function useReviews(reviewer: Reviewer, maxConcurrent: number, onSettled?
   }, []);
   React.useEffect(() => abortAll, [abortAll]);
 
-  const start = (pr: ClassifiedPR) => {
+  const start = (pr: ClassifiedPR, agent: Agent) => {
     const job = jobs.get(pr.id);
-    if (isActive(job)) return "Claude is already reviewing this PR";
+    if (isActive(job)) return `${job!.agent.label} is already reviewing this PR`;
     if (job?.status === "ready" || job?.status === "posting") return "A draft already exists (x to discard it first)";
-    update(pr.id, { status: "queued", pr, startedAt: Date.now() });
-    return `Claude is reviewing ${pr.repo}#${pr.number}`;
+    update(pr.id, { status: "queued", agent, pr, startedAt: Date.now() });
+    return `${agent.label} is reviewing ${pr.repo}#${pr.number}`;
   };
 
   const discard = (pr: ClassifiedPR) => {
@@ -101,12 +110,12 @@ export function useReviews(reviewer: Reviewer, maxConcurrent: number, onSettled?
     return isActive(job) ? "Review cancelled" : "Draft discarded";
   };
 
-  const post = (pr: ClassifiedPR, onDone: (status: string, posted: boolean) => void) => {
+  const post = (pr: ClassifiedPR, event: ReviewEvent, onDone: (status: string, posted: boolean) => void) => {
     const job = jobs.get(pr.id);
     if (job?.status !== "ready") return onDone("No draft to post", false);
     update(pr.id, { ...job, status: "posting" });
     reviewer
-      .post(pr, job.draft, job.headOid)
+      .post(pr, job.draft, job.headOid, event)
       .then((status) => {
         reviewer.removeDraft(pr);
         update(pr.id, null);

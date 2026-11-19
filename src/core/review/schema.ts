@@ -64,7 +64,7 @@ export const REVIEW_DRAFT_SCHEMA = {
 export function parseDraft(value: unknown): ReviewDraft {
   const draft = value as Partial<ReviewDraft> | null;
   if (!draft || typeof draft.summary !== "string" || !Array.isArray(draft.comments)) {
-    throw new Error("Claude returned no structured review");
+    throw new Error("The agent returned no structured review");
   }
   return {
     summary: draft.summary,

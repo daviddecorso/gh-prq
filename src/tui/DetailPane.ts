@@ -43,7 +43,7 @@ function reviewSection(job: ReviewJob | undefined, pr: ClassifiedPR, now: number
       Text,
       { wrap: "truncate-end" },
       title,
-      h(Text, { dimColor: true }, ` · ${draft.comments.length} inline · suggests ${draft.suggestedVerdict.replace("_", " ")} · p post · x discard`),
+      h(Text, { dimColor: true }, ` · ${job.agent.id} · ${draft.comments.length} inline · suggests ${draft.suggestedVerdict.replace("_", " ")} · p post · x discard`),
     ),
     ...draft.summary
       .split(/\r?\n/)

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { AGENTS } from "../src/core/review/agents.ts";
 import { adjacentHeader, buildRows, keyHints, matchesFilter, restoreCursor, rowKey, scrollWindow } from "../src/tui/model.ts";
 import { item } from "./fixtures.ts";
 
@@ -79,8 +80,8 @@ describe("keyHints", () => {
   test("leads with help and adapts to the row", () => {
     expect(keyHints(rows[0], undefined, false)).toMatch(/^\? help {2}enter fold/);
     expect(keyHints(rows[0], undefined, true)).not.toContain("enter fold");
-    expect(keyHints(rows[1], undefined, false)).toContain("a claude");
-    expect(keyHints(rows[1], { status: "running", pr: items[0]!, startedAt: 0 }, false)).toContain("x cancel");
+    expect(keyHints(rows[1], undefined, false)).toContain("a review");
+    expect(keyHints(rows[1], { status: "running", agent: AGENTS.claude, pr: items[0]!, startedAt: 0 }, false)).toContain("x cancel");
     expect(keyHints(rows[1], undefined, true)).toContain("esc clear");
   });
 });

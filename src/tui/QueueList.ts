@@ -27,11 +27,11 @@ export function reviewBadge(job: ReviewJob | undefined, pr: ClassifiedPR, now: n
     case undefined:
       return null;
     case "queued":
-      return { text: "◌ claude queued", color: "gray" };
+      return { text: `◌ ${job.agent.id} queued`, color: "gray" };
     case "running":
-      return { text: `◐ claude ${relativeTime(new Date(job.startedAt).toISOString(), now)}`, color: "magenta" };
+      return { text: `◐ ${job.agent.id} ${relativeTime(new Date(job.startedAt).toISOString(), now)}`, color: "magenta" };
     case "failed":
-      return { text: "✗ claude", color: "red" };
+      return { text: `✗ ${job.agent.id}`, color: "red" };
     case "posting":
       return { text: "✎ posting…", color: "magenta" };
     case "ready":

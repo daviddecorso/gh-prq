@@ -2,12 +2,15 @@ import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { join } from "node:path";
 import { cacheDir } from "../cache.ts";
 import type { ClassifiedPR } from "../types.ts";
+import type { AgentId } from "./agents.ts";
 import type { ReviewDraft } from "./schema.ts";
 
 export interface SavedDraft {
   prId: string;
   headOid: string;
   createdAt: string;
+  /** Absent in drafts saved before other agents were supported, which were all Claude's. */
+  agent?: AgentId;
   draft: ReviewDraft;
 }
 

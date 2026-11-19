@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { run, type Runner } from "../exec.ts";
+import { firstErrorLine, run, type Runner } from "../exec.ts";
 import { createPRWorktree, hasCommit, remoteForRepo } from "../git.ts";
 import type { ClassifiedPR } from "../types.ts";
 
@@ -19,6 +19,8 @@ export interface Workspace {
   local: boolean;
   /** Absent for initial reviews. */
   delta?: Delta;
+  /** The full PR diff, written only when asked for. */
+  diffPath?: string;
   cleanup: () => void;
 }
 
@@ -68,6 +70,7 @@ export async function prepareWorkspace(
   pr: ClassifiedPR,
   deps: WorkspaceDeps = defaultDeps,
   signal?: AbortSignal,
+  { writeDiff = false }: { writeDiff?: boolean } = {},
 ): Promise<Workspace> {
   const contextDir = mkdtempSync(join(tmpdir(), "gh-prq-ctx-"));
   const cleanups = [() => rmSync(contextDir, { recursive: true, force: true })];
@@ -85,7 +88,14 @@ export async function prepareWorkspace(
       worktree = wt.dir;
     }
     const delta = isReReview(pr) ? await resolveDelta(pr, contextDir, worktree, deps.exec, signal) : undefined;
-    return { cwd: worktree ?? contextDir, contextDir, local: worktree != null, delta, cleanup };
+    let diffPath: string | undefined;
+    if (writeDiff) {
+      const res = await deps.exec("gh", ["pr", "diff", pr.url], { signal });
+      if (res.code !== 0) throw new Error(`Couldn't fetch the PR diff: ${firstErrorLine(res)}`);
+      diffPath = join(contextDir, "pr.diff");
+      writeFileSync(diffPath, res.stdout);
+    }
+    return { cwd: worktree ?? contextDir, contextDir, local: worktree != null, delta, diffPath, cleanup };
   } catch (err) {
     cleanup();
     throw err;

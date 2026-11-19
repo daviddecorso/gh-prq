@@ -2,6 +2,7 @@ import { render } from "ink-testing-library";
 import React from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { ClassifiedPR, QueueResult } from "../src/core/types.ts";
+import { AGENTS, type Agent } from "../src/core/review/agents.ts";
 import type { ReviewDraft } from "../src/core/review/schema.ts";
 import type { Actions } from "../src/tui/actions.ts";
 import { App } from "../src/tui/App.ts";
@@ -25,6 +26,7 @@ function setup(
   initial: QueueResult | null = null,
   reviewerOverrides: Partial<Reviewer> = {},
   maxConcurrent = 2,
+  agents: Agent[] = [AGENTS.claude],
 ) {
   const actions: Actions = {
     open: vi.fn((pr: ClassifiedPR) => `Opened ${pr.id}`),
@@ -52,7 +54,8 @@ function setup(
       initial,
       actions,
       reviewer,
-      claude: { maxConcurrent, confirmBeforePosting: true },
+      review: { maxConcurrent, confirmBeforePosting: true },
+      agents,
       collapseWaitingByDefault: true,
       autoRefreshSeconds: 0,
       onCheckout,
@@ -280,14 +283,58 @@ describe("App", () => {
   });
 });
 
-describe("Claude reviews", () => {
+describe("agent switching", () => {
+  test("m cycles agents, shows the active one, and new reviews use it", async () => {
+    const app = setup(async () => queue, {}, null, {}, 2, [AGENTS.claude, AGENTS.gemini]);
+    cleanup = app.unmount;
+    await tick();
+    expect(app.lastFrame()).toContain("⇄ claude");
+    await press(app, "m");
+    expect(app.lastFrame()).toContain("⇄ gemini");
+    await press(app, "a");
+    expect(app.reviewer.run).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }), AGENTS.gemini, expect.any(AbortSignal));
+    await tick();
+    expect(app.lastFrame()).toContain("Gemini draft ready");
+    await press(app, "m", "A");
+    expect(app.onHandoff).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }), AGENTS.claude);
+  });
+
+  test("a draft keeps its agent after switching", async () => {
+    const saved = { prId: "PR1", headOid: "c1", createdAt: "", agent: "codex" as const, draft: DRAFT };
+    const app = setup(async () => queue, {}, null, { loadDrafts: () => [saved] }, 2, [AGENTS.claude, AGENTS.codex]);
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "m", "m", "d");
+    expect(app.actions.viewDetails).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ agent: AGENTS.codex }));
+  });
+
+  test("a single agent hides the indicator and ignores m", async () => {
+    const app = setup(async () => queue);
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "m");
+    expect(app.lastFrame()).not.toContain("⇄");
+    expect(app.lastFrame()).not.toContain("Reviews now use");
+  });
+
+  test("no installed agent explains why a does nothing", async () => {
+    const app = setup(async () => queue, {}, null, {}, 2, []);
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "a");
+    expect(app.reviewer.run).not.toHaveBeenCalled();
+    expect(app.lastFrame()).toContain("No review agent found");
+  });
+});
+
+describe("agent reviews", () => {
   test("a runs a review in the background and shows the draft", async () => {
     let finish!: (d: ReviewDraft) => void;
     const app = setup(async () => queue, {}, null, { run: vi.fn(() => new Promise<ReviewDraft>((r) => (finish = r))) });
     cleanup = app.unmount;
     await tick();
     await press(app, "a");
-    expect(app.reviewer.run).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }), expect.any(AbortSignal));
+    expect(app.reviewer.run).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }), AGENTS.claude, expect.any(AbortSignal));
     expect(app.lastFrame()).toContain("◐ claude");
 
     finish(DRAFT);
@@ -315,7 +362,10 @@ describe("Claude reviews", () => {
     cleanup = app.unmount;
     await tick();
     await press(app, "d");
-    expect(app.actions.viewDetails).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }), DRAFT);
+    expect(app.actions.viewDetails).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "PR1" }),
+      expect.objectContaining({ draft: DRAFT, agent: AGENTS.claude }),
+    );
   });
 
   test("d shows full details and surfaces failures", async () => {
@@ -337,21 +387,45 @@ describe("Claude reviews", () => {
     expect(app.lastFrame()).toContain("◌ claude queued");
   });
 
-  test("p then y posts the draft; p then n doesn't", async () => {
+  test("p then p posts a pending review; p then n doesn't", async () => {
     const saved = { prId: "PR1", headOid: "c1", createdAt: "", draft: DRAFT };
     const app = setup(async () => queue, {}, null, { loadDrafts: () => [saved] });
     cleanup = app.unmount;
     await tick();
     await press(app, "p");
-    expect(app.lastFrame()).toContain("Post a pending review on acme/api#1? y/n");
+    expect(app.lastFrame()).toContain("Post to acme/api#1: c comment · a approve · r request changes · p pending");
     await press(app, "n");
     expect(app.reviewer.post).not.toHaveBeenCalled();
 
-    await press(app, "p", "y");
-    expect(app.reviewer.post).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }), DRAFT, "c1");
+    await press(app, "p", "p");
+    expect(app.reviewer.post).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }), DRAFT, "c1", "PENDING");
     expect(app.reviewer.removeDraft).toHaveBeenCalled();
     expect(app.actions.openFiles).toHaveBeenCalled();
     expect(app.lastFrame()).toContain("Pending review posted");
+  });
+
+  test("enter submits the draft's suggested verdict and doesn't open the browser", async () => {
+    const saved = { prId: "PR1", headOid: "c1", createdAt: "", draft: { ...DRAFT, suggestedVerdict: "request_changes" as const } };
+    const app = setup(async () => queue, {}, null, { loadDrafts: () => [saved] });
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "p");
+    expect(app.lastFrame()).toContain("enter request changes");
+    await press(app, "\r");
+    expect(app.reviewer.post).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }), saved.draft, "c1", "REQUEST_CHANGES");
+    expect(app.actions.openFiles).not.toHaveBeenCalled();
+  });
+
+  test("on your own PR, p only offers comment and pending", async () => {
+    const own = result([item("PR1", "NEEDS_REREVIEW", { author: "me" })]);
+    const saved = { prId: "PR1", headOid: "c1", createdAt: "", draft: { ...DRAFT, suggestedVerdict: "approve" as const } };
+    const app = setup(async () => own, {}, null, { loadDrafts: () => [saved] });
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "p");
+    expect(app.lastFrame()).toContain("c comment · p pending · enter comment");
+    await press(app, "a");
+    expect(app.reviewer.post).not.toHaveBeenCalled();
   });
 
   test("a failed post keeps the draft and shows the error", async () => {
@@ -364,7 +438,7 @@ describe("Claude reviews", () => {
     });
     cleanup = app.unmount;
     await tick();
-    await press(app, "p", "y");
+    await press(app, "p", "c");
     expect(app.lastFrame()).toContain("You already have a pending review");
     expect(app.lastFrame()).toContain("✎ draft");
     expect(app.reviewer.removeDraft).not.toHaveBeenCalled();
@@ -383,13 +457,13 @@ describe("Claude reviews", () => {
     cleanup = app.unmount;
     await tick();
     await press(app, "A");
-    expect(app.onHandoff).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }));
+    expect(app.onHandoff).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }), AGENTS.claude);
   });
 
   test("q with a running review asks twice and aborts it", async () => {
     let signal!: AbortSignal;
     const app = setup(async () => queue, {}, null, {
-      run: vi.fn((_pr, s: AbortSignal) => {
+      run: vi.fn((_pr, _agent, s: AbortSignal) => {
         signal = s;
         return new Promise<ReviewDraft>(() => {});
       }),
@@ -397,7 +471,7 @@ describe("Claude reviews", () => {
     cleanup = app.unmount;
     await tick();
     await press(app, "a", "q");
-    expect(app.lastFrame()).toContain("1 Claude review running; q again to quit");
+    expect(app.lastFrame()).toContain("1 review running; q again to quit");
     expect(signal.aborted).toBe(false);
     await press(app, "q");
     expect(signal.aborted).toBe(true);
@@ -406,7 +480,7 @@ describe("Claude reviews", () => {
   test("x cancels a running review", async () => {
     let signal!: AbortSignal;
     const app = setup(async () => queue, {}, null, {
-      run: vi.fn((_pr, s: AbortSignal) => {
+      run: vi.fn((_pr, _agent, s: AbortSignal) => {
         signal = s;
         return new Promise<ReviewDraft>(() => {});
       }),
@@ -423,7 +497,7 @@ describe("Claude reviews", () => {
     const signals: AbortSignal[] = [];
     const resolvers: ((d: ReviewDraft) => void)[] = [];
     const app = setup(async () => queue, {}, null, {
-      run: vi.fn((_pr, s: AbortSignal) => {
+      run: vi.fn((_pr, _agent, s: AbortSignal) => {
         signals.push(s);
         return new Promise<ReviewDraft>((r) => resolvers.push(r));
       }),
@@ -446,7 +520,7 @@ describe("Claude reviews", () => {
     });
     cleanup = app.unmount;
     await tick();
-    await press(app, "p", "y", "x");
+    await press(app, "p", "c", "x");
     expect(app.lastFrame()).toContain("Post in progress");
     expect(app.lastFrame()).toContain("✎ posting");
     expect(app.reviewer.removeDraft).not.toHaveBeenCalled();
@@ -460,6 +534,6 @@ describe("Claude reviews", () => {
     await tick();
     await press(app, "a", "c");
     expect(app.onCheckout).not.toHaveBeenCalled();
-    expect(app.lastFrame()).toContain("1 Claude review running");
+    expect(app.lastFrame()).toContain("1 review running");
   });
 });
