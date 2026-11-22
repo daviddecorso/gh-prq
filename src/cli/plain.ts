@@ -7,7 +7,7 @@ import {
   type CiState,
   type QueueResult,
 } from "../core/types.ts";
-import { CI_STYLE, padEndDisplay, relativeTime, truncate } from "../core/format.ts";
+import { BUCKET_TONE, CI_STYLE, padEndDisplay, relativeTime, truncate } from "../core/format.ts";
 
 const TITLE_WIDTH = 50;
 
@@ -48,7 +48,7 @@ export function renderPlain(result: QueueResult, opts: { color: boolean; now?: n
   for (const bucket of BUCKET_ORDER) {
     const rows = items.filter((i) => i.bucket === bucket);
     if (rows.length === 0) continue;
-    lines.push("", paint.bold(`${BUCKET_LABELS[bucket].toUpperCase()} (${rows.length})`));
+    lines.push("", paint.bold(paint[BUCKET_TONE[bucket]](`${BUCKET_LABELS[bucket].toUpperCase()} (${rows.length})`)));
     for (const pr of rows) {
       const badges = pr.badges.map((b) => paint.cyan(` [${b}]`)).join("");
       lines.push(

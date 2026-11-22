@@ -35,7 +35,7 @@ node src/cli/index.ts --plain
 - `src/tui/` is the Ink TUI. Components are plain `.ts` using `React.createElement` (Node's type stripping can't run `.tsx`); `model.ts` holds the pure row/cursor/scroll logic.
 - `test/` covers each bucket transition, the TUI model, and the TUI app via `ink-testing-library`.
 
-`gh prq` opens the TUI when stdin and stdout are TTYs, otherwise it prints `--plain`. The TUI shows the last cached queue immediately and refreshes in the background. Press `?` in the TUI for keys. `/` filters by repo, title, or `@author` (esc clears), and `]`/`[` jump between buckets. `--exclude <glob>` (repeatable) and `filters.excludeRepos` hide repos: `acme/*` matches an owner, a bare `legacy-*` matches the repo name under any owner. `ui.autoRefreshSeconds` in `~/.config/gh-prq/config.json` sets the background refresh (default 300, `0` disables).
+`gh prq` opens the TUI in the alternate screen when stdin and stdout are TTYs, otherwise it prints `--plain`. The TUI shows the last cached queue immediately and refreshes in the background. Press `?` in the TUI for keys. `/` filters by space-separated terms across repo, title, `@author`, reason, badges, `ci:` state, and `is:draft` (esc clears), `]`/`[` jump between buckets, and `J`/`K` scroll the info pane (`ui.showDetailByDefault` defaults to `"auto"`, opening on terminals `>= 180` columns; manual `i` uses a side pane at `>= 120`). `--exclude <glob>` (repeatable) and `filters.excludeRepos` hide repos: `acme/*` matches an owner, a bare `legacy-*` matches the repo name under any owner. `ui.autoRefreshSeconds` in `~/.config/gh-prq/config.json` sets the background refresh (default 300, `0` disables).
 
 ## Agent reviews
 
@@ -49,7 +49,7 @@ In the TUI, `a` has an AI agent draft a review in the background, and `A` exits 
 
 If the cwd is a clone of the PR's repo, the agent gets a throwaway `git worktree` at the PR head. Otherwise it only sees the diff. Re-reviews look at the commits since your last review and report whether each of your open threads was addressed.
 
-A finished draft rings the terminal bell and shows in the info pane (`i`); `d` pages the full draft ahead of the PR details. `p` posts it: `c` comment, `a` approve, or `r` request changes submits it right away with the draft's summary as the review body, `p` leaves it as a pending review to edit and submit in the browser, and enter picks the verdict the agent suggested. Then `x` cancels or discards. Drafts persist in `~/.cache/gh-prq/drafts/` across restarts.
+A finished draft rings the terminal bell and shows in the info pane (`i`); `d` opens the full details reader with the draft first, where you can scroll and post (`p`) directly. `p` posts it: `c` comment, `a` approve, or `r` request changes submits it right away with the draft's summary as the review body, `p` leaves it as a pending review to edit and submit in the browser, and enter picks the verdict the agent suggested. Then `x` cancels or discards. Drafts persist in `~/.cache/gh-prq/drafts/` across restarts.
 
 ```json
 {

@@ -13,6 +13,7 @@ import { agentRun, runHeadlessReview } from "../core/review/runner.ts";
 import { prepareWorkspace } from "../core/review/workspace.ts";
 import type { ClassifiedPR, QueueResult } from "../core/types.ts";
 import { defaultActions, runCheckout } from "./actions.ts";
+import { runInAltScreen } from "./altScreen.ts";
 import { App } from "./App.ts";
 import type { Reviewer } from "./useReviews.ts";
 
@@ -67,25 +68,28 @@ export async function runTui({ config, scope, flags }: RunTuiOptions): Promise<n
 
   // Assigned from callbacks, which TS's control-flow narrowing can't see.
   let after = null as { kind: "checkout"; pr: ClassifiedPR } | { kind: "handoff"; pr: ClassifiedPR; agent: Agent } | null;
-  const app = render(
-    React.createElement(App, {
-      load,
-      initial: cached && filtered(cached),
-      actions: defaultActions,
-      reviewer: makeReviewer(config),
-      review: config.agent,
-      agents: availableAgents(config.agent.default),
-      collapseWaitingByDefault: config.ui.collapseWaitingByDefault,
-      autoRefreshSeconds: config.ui.autoRefreshSeconds,
-      onCheckout: (pr) => {
-        after = { kind: "checkout", pr };
-      },
-      onHandoff: (pr, agent) => {
-        after = { kind: "handoff", pr, agent };
-      },
-    }),
+
+  await runInAltScreen(() =>
+    render(
+      React.createElement(App, {
+        load,
+        initial: cached && filtered(cached),
+        actions: defaultActions,
+        reviewer: makeReviewer(config),
+        review: config.agent,
+        agents: availableAgents(config.agent.default),
+        collapseWaitingByDefault: config.ui.collapseWaitingByDefault,
+        showDetailByDefault: config.ui.showDetailByDefault,
+        autoRefreshSeconds: config.ui.autoRefreshSeconds,
+        onCheckout: (pr) => {
+          after = { kind: "checkout", pr };
+        },
+        onHandoff: (pr, agent) => {
+          after = { kind: "handoff", pr, agent };
+        },
+      }),
+    ),
   );
-  await app.waitUntilExit();
 
   if (after?.kind === "checkout") return runCheckout(after.pr);
   if (after?.kind === "handoff") return runHandoff(after.pr, after.agent, config);

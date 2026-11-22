@@ -9,17 +9,33 @@ export const rowKey = (row: Row): string => (row.kind === "header" ? `h:${row.bu
 
 export const bucketOfRow = (row: Row): BucketId => (row.kind === "header" ? row.bucket : row.pr.bucket);
 
-export function matchesFilter(pr: ClassifiedPR, query: string): boolean {
-  const haystack = `${pr.repo}#${pr.number} ${pr.title} @${pr.author}`.toLowerCase();
-  return haystack.includes(query.trim().toLowerCase());
+export function matchesFilter(pr: ClassifiedPR, query: string, job?: ReviewJob): boolean {
+  const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (terms.length === 0) return true;
+  const parts = [
+    `${pr.repo}#${pr.number}`,
+    pr.title,
+    `@${pr.author}`,
+    pr.reason,
+    ...pr.badges,
+    `ci:${pr.ciState}`,
+    job?.status === "ready" || job?.status === "posting" ? "is:draft" : "",
+  ];
+  const haystack = parts.join(" ").toLowerCase();
+  return terms.every((term) => haystack.includes(term));
 }
 
 /** A non-empty `query` hides non-matching PRs and expands every bucket so matches are never folded away. */
-export function buildRows(items: readonly ClassifiedPR[], collapsed: ReadonlySet<BucketId>, query = ""): Row[] {
+export function buildRows(
+  items: readonly ClassifiedPR[],
+  collapsed: ReadonlySet<BucketId>,
+  query = "",
+  jobs?: ReadonlyMap<string, ReviewJob>,
+): Row[] {
   const filtering = query.trim() !== "";
   const rows: Row[] = [];
   for (const bucket of BUCKET_ORDER) {
-    const prs = items.filter((pr) => pr.bucket === bucket && (!filtering || matchesFilter(pr, query)));
+    const prs = items.filter((pr) => pr.bucket === bucket && (!filtering || matchesFilter(pr, query, jobs?.get(pr.id))));
     if (prs.length === 0) continue;
     const isCollapsed = !filtering && collapsed.has(bucket);
     rows.push({ kind: "header", bucket, count: prs.length, collapsed: isCollapsed });
@@ -58,15 +74,42 @@ export function scrollWindow(cursor: number, rowCount: number, height: number, p
   return Math.max(0, Math.min(start, rowCount - height));
 }
 
+export interface KeyHintOptions {
+  showDetail?: boolean;
+  detailsOpen?: boolean;
+}
+
 /** Footer hints for the selected row; `? help` leads so truncation never hides it. */
-export function keyHints(row: Row | undefined, job: ReviewJob | undefined, filterActive: boolean): string {
+export function keyHints(
+  row: Row | undefined,
+  job: ReviewJob | undefined,
+  filterActive: boolean,
+  { showDetail = false, detailsOpen = false }: KeyHintOptions = {},
+): string {
+  if (detailsOpen) {
+    const actions =
+      job?.status === "ready"
+        ? [
+            "p post",
+            ...(row?.kind === "pr" && job.headOid !== row.pr.headOid ? ["a re-review"] : []),
+            "x discard",
+          ]
+        : job?.status === "queued" || job?.status === "running"
+          ? ["x cancel"]
+          : ["a review", "v approve"];
+    return ["esc back", "j/k scroll", ...actions, "o open", "y copy"].join("  ");
+  }
+
   const tail = filterActive ? ["/ filter", "esc clear", "q quit"] : ["/ filter", "q quit"];
+  const stale = row?.kind === "pr" && job?.status === "ready" && job.headOid !== row.pr.headOid;
   let middle: string[];
   if (!row) middle = ["r refresh"];
   else if (row.kind === "header") middle = filterActive ? ["[/] bucket", "j/k move"] : ["enter fold", "[/] bucket", "j/k move"];
   else if (job?.status === "queued" || job?.status === "running") middle = ["x cancel", "o open", "i info", "d details"];
-  else if (job?.status === "ready") middle = ["d read draft", "p post", "x discard", "o open", "i info"];
-  else if (job?.status === "failed") middle = ["a retry", "x clear", "o open", "i info"];
+  else if (job?.status === "ready") {
+    middle = ["d read draft", "p post", ...(stale ? ["a re-review"] : []), "x discard", "o open", "i info"];
+  } else if (job?.status === "failed") middle = ["a retry", "x clear", "o open", "i info"];
   else middle = ["o open", "a review", "v approve", "d details", "i info", "c checkout"];
+  if (showDetail && row?.kind === "pr") middle = [...middle, "J/K scroll"];
   return ["? help", ...middle, ...tail].join("  ");
 }

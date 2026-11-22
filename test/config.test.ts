@@ -37,4 +37,11 @@ describe("loadConfig agent", () => {
   test("an unknown default agent is rejected", () => {
     expect(() => loadConfig(configFile({ agent: { default: "gpt" } }))).toThrow("agent.default");
   });
+
+  test("ui.showDetailByDefault accepts auto and booleans and rejects other values", () => {
+    expect(loadConfig(configFile({})).ui.showDetailByDefault).toBe("auto");
+    expect(loadConfig(configFile({ ui: { showDetailByDefault: true } })).ui.showDetailByDefault).toBe(true);
+    expect(loadConfig(configFile({ ui: { showDetailByDefault: false } })).ui.showDetailByDefault).toBe(false);
+    expect(() => loadConfig(configFile({ ui: { showDetailByDefault: "wide" } }))).toThrow("showDetailByDefault");
+  });
 });

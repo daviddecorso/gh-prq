@@ -4,6 +4,7 @@ import { AGENTS } from "../src/core/review/agents.ts";
 import type { SavedDraft } from "../src/core/review/drafts.ts";
 import type { BucketId, ClassifiedPR, QueueResult } from "../src/core/types.ts";
 import type { Actions } from "../src/tui/actions.ts";
+import { runInAltScreen } from "../src/tui/altScreen.ts";
 import { App } from "../src/tui/App.ts";
 
 const now = Date.now();
@@ -143,35 +144,37 @@ const drafts: SavedDraft[] = [
   },
 ];
 
-const noop = () => null;
 const actions: Actions = {
   open: (p) => `Opened ${p.repo}#${p.number}`,
   openFiles: () => {},
   copy: (p) => `Copied ${p.url}`,
   approve: async (p) => `Approved ${p.repo}#${p.number}`,
-  checkoutBlocker: noop,
-  viewDetails: noop,
+  checkoutBlocker: () => null,
+  loadDetails: async (p) =>
+    `${p.repo}#${p.number} — ${p.title}\nAuthor: @${p.author}\n\n${p.latestReplySnippet?.body ?? "Demo PR body."}\n\nREVIEW COMMENTS\nNo inline review comments.`,
   bell: () => {},
 };
 
-const app = render(
-  React.createElement(App, {
-    load: async () => queue,
-    initial: queue,
-    actions,
-    reviewer: {
-      run: async () => drafts[0]!.draft,
-      post: async () => "Review posted",
-      loadDrafts: () => drafts,
-      saveDraft: () => {},
-      removeDraft: () => {},
-    },
-    review: { maxConcurrent: 2, confirmBeforePosting: true },
-    agents: [AGENTS.claude, AGENTS.gemini],
-    collapseWaitingByDefault: false,
-    autoRefreshSeconds: 0,
-    onCheckout: () => {},
-    onHandoff: () => {},
-  }),
+await runInAltScreen(() =>
+  render(
+    React.createElement(App, {
+      load: async () => queue,
+      initial: queue,
+      actions,
+      reviewer: {
+        run: async () => drafts[0]!.draft,
+        post: async () => "Review posted",
+        loadDrafts: () => drafts,
+        saveDraft: () => {},
+        removeDraft: () => {},
+      },
+      review: { maxConcurrent: 2, confirmBeforePosting: true },
+      agents: [AGENTS.claude, AGENTS.gemini],
+      collapseWaitingByDefault: false,
+      showDetailByDefault: "auto",
+      autoRefreshSeconds: 0,
+      onCheckout: () => {},
+      onHandoff: () => {},
+    }),
+  ),
 );
-await app.waitUntilExit();

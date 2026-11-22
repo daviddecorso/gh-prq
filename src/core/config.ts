@@ -30,6 +30,7 @@ export interface Config {
     cacheTtlSeconds: number;
     collapseWaitingByDefault: boolean;
     showDrafts: boolean;
+    showDetailByDefault: "auto" | boolean;
     /** TUI background refresh interval; 0 disables. */
     autoRefreshSeconds: number;
   };
@@ -60,6 +61,7 @@ export const DEFAULT_CONFIG: Config = {
     cacheTtlSeconds: 30,
     collapseWaitingByDefault: true,
     showDrafts: false,
+    showDetailByDefault: "auto",
     autoRefreshSeconds: 300,
   },
 };
@@ -97,6 +99,9 @@ export function loadConfig(path = configPath()): Config {
   };
   if (!(AGENT_IDS as readonly string[]).includes(config.agent.default)) {
     throw new Error(`Invalid config: agent.default in ${path} must be one of ${AGENT_IDS.join(", ")}.`);
+  }
+  if (typeof config.ui.showDetailByDefault !== "boolean" && config.ui.showDetailByDefault !== "auto") {
+    throw new Error(`Invalid config: ui.showDetailByDefault in ${path} must be "auto", true, or false.`);
   }
   const list = (value: unknown, field: string) => toStringList(value, `${field} in ${path}`);
   config.filters.ignoredBots = list(config.filters.ignoredBots, "filters.ignoredBots");

@@ -1,3 +1,5 @@
+import { EventEmitter } from "node:events";
+import { render as inkRender } from "ink";
 import { render } from "ink-testing-library";
 import React from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -5,7 +7,7 @@ import type { ClassifiedPR, QueueResult } from "../src/core/types.ts";
 import { AGENTS, type Agent } from "../src/core/review/agents.ts";
 import type { ReviewDraft } from "../src/core/review/schema.ts";
 import type { Actions } from "../src/tui/actions.ts";
-import { App } from "../src/tui/App.ts";
+import { App, AUTO_DETAIL_MIN_COLUMNS } from "../src/tui/App.ts";
 import { DetailPane } from "../src/tui/DetailPane.ts";
 import type { Row } from "../src/tui/model.ts";
 import type { Reviewer } from "../src/tui/useReviews.ts";
@@ -27,6 +29,7 @@ function setup(
   reviewerOverrides: Partial<Reviewer> = {},
   maxConcurrent = 2,
   agents: Agent[] = [AGENTS.claude],
+  showDetailByDefault: "auto" | boolean = false,
 ) {
   const actions: Actions = {
     open: vi.fn((pr: ClassifiedPR) => `Opened ${pr.id}`),
@@ -34,7 +37,7 @@ function setup(
     copy: vi.fn((pr: ClassifiedPR) => `Copied ${pr.id}`),
     approve: vi.fn(async (pr: ClassifiedPR) => `Approved ${pr.id}`),
     checkoutBlocker: vi.fn(() => null),
-    viewDetails: vi.fn(() => null),
+    loadDetails: vi.fn(async (pr: ClassifiedPR) => `PR body for ${pr.id}`),
     bell: vi.fn(),
     ...actionOverrides,
   };
@@ -57,6 +60,7 @@ function setup(
       review: { maxConcurrent, confirmBeforePosting: true },
       agents,
       collapseWaitingByDefault: true,
+      showDetailByDefault,
       autoRefreshSeconds: 0,
       onCheckout,
       onHandoff,
@@ -305,7 +309,7 @@ describe("agent switching", () => {
     cleanup = app.unmount;
     await tick();
     await press(app, "m", "m", "d");
-    expect(app.actions.viewDetails).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ agent: AGENTS.codex }));
+    expect(app.lastFrame()).toContain("CODEX DRAFT");
   });
 
   test("a single agent hides the indicator and ignores m", async () => {
@@ -356,25 +360,47 @@ describe("agent reviews", () => {
     expect(app.actions.bell).toHaveBeenCalledTimes(1);
   });
 
-  test("d pages the draft along with the details when one exists", async () => {
+  test("d opens the in-TUI reader with draft first and lets you post from it", async () => {
     const saved = { prId: "PR1", headOid: "c1", createdAt: "", draft: DRAFT };
     const app = setup(async () => queue, {}, null, { loadDrafts: () => [saved] });
     cleanup = app.unmount;
     await tick();
     await press(app, "d");
-    expect(app.actions.viewDetails).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "PR1" }),
-      expect.objectContaining({ draft: DRAFT, agent: AGENTS.claude }),
-    );
+    const frame = app.lastFrame()!;
+    expect(frame).toContain("CLAUDE DRAFT");
+    expect(frame).toContain("One race in the refresh path");
+    expect(frame).toContain("PR body for PR1");
+
+    await press(app, "p", "c");
+    expect(app.reviewer.post).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }), DRAFT, "c1", "COMMENT");
+
+    await press(app, "\x1b");
+    expect(app.lastFrame()).toContain("▾ NEEDS RE-REVIEW (1)");
   });
 
   test("d shows full details and surfaces failures", async () => {
-    const app = setup(async () => queue, { viewDetails: vi.fn(() => "no pull requests found") });
+    const app = setup(async () => queue, { loadDetails: vi.fn(async () => { throw new Error("no pull requests found"); }) });
     cleanup = app.unmount;
     await tick();
     await press(app, "d");
-    expect(app.actions.viewDetails).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }));
+    expect(app.actions.loadDetails).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }), expect.any(Object));
     expect(app.lastFrame()).toContain("no pull requests found");
+  });
+
+  test("d keeps the draft visible even if GitHub details fail to load", async () => {
+    const saved = { prId: "PR1", headOid: "c1", createdAt: "", draft: DRAFT };
+    const app = setup(
+      async () => queue,
+      { loadDetails: vi.fn(async () => { throw new Error("offline"); }) },
+      null,
+      { loadDrafts: () => [saved] },
+    );
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "d");
+    const frame = app.lastFrame()!;
+    expect(frame).toContain("CLAUDE DRAFT");
+    expect(frame).toContain("Couldn't load PR details: offline");
   });
 
   test("maxConcurrent queues extra reviews", async () => {
@@ -535,5 +561,296 @@ describe("agent reviews", () => {
     await press(app, "a", "c");
     expect(app.onCheckout).not.toHaveBeenCalled();
     expect(app.lastFrame()).toContain("1 review running");
+  });
+
+  test("a on a stale draft confirms and replaces it without deleting the old draft early", async () => {
+    const saved = { prId: "PR1", headOid: "old", createdAt: "", draft: DRAFT };
+    const app = setup(async () => queue, {}, null, { loadDrafts: () => [saved] });
+    cleanup = app.unmount;
+    await tick();
+    expect(app.lastFrame()).toContain("✎ 1 draft");
+    await press(app, "a");
+    expect(app.lastFrame()).toContain("Draft is stale — re-run Claude on acme/api#1? y/n");
+    await press(app, "y");
+    expect(app.reviewer.removeDraft).not.toHaveBeenCalled();
+    expect(app.reviewer.run).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }), AGENTS.claude, expect.any(AbortSignal));
+    expect(app.reviewer.saveDraft).toHaveBeenCalled();
+  });
+
+  test("cancelling or failing a stale draft re-run restores the old draft", async () => {
+    const saved = { prId: "PR1", headOid: "old", createdAt: "", draft: DRAFT };
+    let rejectRun!: (err: Error) => void;
+    const run = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise<ReviewDraft>(() => {}))
+      .mockImplementationOnce(() => new Promise<ReviewDraft>((_, rej) => (rejectRun = rej)));
+    const app = setup(async () => queue, {}, null, { loadDrafts: () => [saved], run });
+    cleanup = app.unmount;
+    await tick();
+
+    // Cancel restores the stale draft without removing it from disk.
+    await press(app, "a", "y");
+    expect(app.lastFrame()).toContain("◐ claude");
+    await press(app, "x");
+    expect(app.lastFrame()).toContain("✎ draft (stale)");
+    expect(app.reviewer.removeDraft).not.toHaveBeenCalled();
+
+    // Failure restores the stale draft and still reports the error.
+    await press(app, "a", "y");
+    rejectRun(new Error("agent timed out"));
+    await tick();
+    expect(app.lastFrame()).toContain("✎ draft (stale)");
+    expect(app.lastFrame()).toContain("agent timed out");
+    expect(app.reviewer.removeDraft).not.toHaveBeenCalled();
+  });
+
+  test("ctrl-d scrolls inside the details reader instead of closing it", async () => {
+    const longBody = Array.from({ length: 60 }, (_, i) => `Detail line ${i + 1}`).join("\n");
+    const app = setup(async () => queue, { loadDetails: vi.fn(async () => longBody) });
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "d");
+    expect(app.lastFrame()).toContain("Detail line 1");
+    expect(app.lastFrame()).toContain("1–18 / 60");
+    await press(app, "\x04"); // ctrl-d
+    expect(app.lastFrame()).toContain("10–27 / 60");
+    await press(app, "d"); // plain d closes
+    expect(app.lastFrame()).toContain("▾ NEEDS RE-REVIEW (1)");
+  });
+
+  test("details stays open when a draft finishes before loadDetails fails", async () => {
+    let finishRun!: (d: ReviewDraft) => void;
+    let failDetails!: (err: Error) => void;
+    const app = setup(
+      async () => queue,
+      { loadDetails: vi.fn(() => new Promise<string>((_, rej) => (failDetails = rej))) },
+      null,
+      { run: vi.fn(() => new Promise<ReviewDraft>((r) => (finishRun = r))) },
+    );
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "a", "d");
+    expect(app.lastFrame()).toContain("Loading PR details");
+
+    finishRun(DRAFT);
+    await tick();
+    failDetails(new Error("offline"));
+    await tick();
+
+    const frame = app.lastFrame()!;
+    expect(frame).toContain("CLAUDE DRAFT");
+    expect(frame).toContain("Couldn't load PR details: offline");
+  });
+
+  test("is:draft filter keeps a row visible while posting so the cursor doesn't jump", async () => {
+    const saved1 = { prId: "PR1", headOid: "c1", createdAt: "", draft: DRAFT };
+    const saved2 = { prId: "PR2", headOid: "c1", createdAt: "", draft: DRAFT };
+    const app = setup(async () => queue, {}, null, {
+      loadDrafts: () => [saved1, saved2],
+      post: vi.fn(() => new Promise<string>(() => {})),
+    });
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "/", ..."is:draft", "\r");
+    await press(app, "p", "c");
+    expect(app.lastFrame()).toContain("PR PR1");
+    expect(app.lastFrame()).toContain("✎ posting");
+    await press(app, "o");
+    expect(app.actions.open).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }));
+  });
+
+  test("DetailPane strips control chars and renders multiline follow-up notes and errors on one line", () => {
+    const pr = item("PR1", "NEEDS_REREVIEW");
+    const draftWithMultiline: ReviewDraft = {
+      summary: "ok\x1b]52;c;YWJj\x07\rfake",
+      threadFollowUps: [{ thread: 1, path: "src/a.ts", status: "partial", note: "line one\nline two\nline three" }],
+      comments: [],
+      suggestedVerdict: "comment",
+    };
+    const readyPane = render(
+      React.createElement(DetailPane, {
+        row: { kind: "pr", pr } as Row,
+        width: 80,
+        height: 20,
+        now: Date.now(),
+        job: { status: "ready", agent: AGENTS.claude, headOid: pr.headOid, draft: draftWithMultiline },
+      }),
+    );
+    const readyFrame = readyPane.lastFrame()!;
+    expect(readyFrame).toContain("okfake");
+    expect(readyFrame).not.toContain("\x1b]52");
+    expect(readyFrame).toContain("src/a.ts: line one");
+    expect(readyFrame).not.toContain("line two");
+    readyPane.unmount();
+
+    const failedPane = render(
+      React.createElement(DetailPane, {
+        row: { kind: "pr", pr } as Row,
+        width: 80,
+        height: 20,
+        now: Date.now(),
+        job: { status: "failed", agent: AGENTS.claude, pr, error: "err line 1\nerr line 2" },
+      }),
+    );
+    const failedFrame = failedPane.lastFrame()!;
+    expect(failedFrame).toContain("err line 1");
+    expect(failedFrame).not.toContain("err line 2");
+    failedPane.unmount();
+  });
+
+  test("esc closes the info pane without quitting", async () => {
+    const app = setup(async () => queue);
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "i");
+    expect(app.lastFrame()).toContain("J/K scroll");
+    await press(app, "\x1b");
+    expect(app.lastFrame()).not.toContain("J/K scroll");
+    // Still running: pressing o works.
+    await press(app, "o");
+    expect(app.actions.open).toHaveBeenCalled();
+  });
+
+  test("J/K bursts net out and scroll an overflowing info pane", async () => {
+    const richPR = item("PR1", "NEEDS_REREVIEW", {
+      allReasons: ["r1", "r2", "r3", "r4", "r5"],
+      commits: [
+        { oid: "1111111", headline: "Commit one", committedAt: new Date().toISOString() },
+        { oid: "2222222", headline: "Commit two", committedAt: new Date().toISOString() },
+        { oid: "3333333", headline: "Commit three", committedAt: new Date().toISOString() },
+      ],
+      commitCount: 3,
+    });
+    const app = setup(async () => result([richPR]));
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "i");
+    expect(app.lastFrame()).toContain("more · J/K scroll · d full");
+    await press(app, "JJJK");
+    expect(app.lastFrame()).toContain("↑ 2");
+  });
+
+  test("filter supports ctrl-w and ctrl-u editing shortcuts", async () => {
+    const app = setup(async () => queue);
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "/", "a", "c", "m", "e", " ", "z", "z");
+    expect(app.lastFrame()).toContain('No PRs match "acme zz"');
+    await press(app, "\x17"); // ctrl-w deletes "zz"
+    expect(app.lastFrame()).toContain("PR PR1");
+    await press(app, "\x15"); // ctrl-u clears entire filter
+    expect(app.lastFrame()).not.toContain('filter "');
+  });
+
+  test("in-flight approve shows an inline approving badge and shows non-own @author", async () => {
+    let finish!: (msg: string) => void;
+    const app = setup(async () => queue, {
+      approve: vi.fn(() => new Promise<string>((r) => (finish = r))),
+    });
+    cleanup = app.unmount;
+    await tick();
+    expect(app.lastFrame()).toContain("@alice");
+    await press(app, "v", "y");
+    expect(app.lastFrame()).toContain("approving…");
+    finish("Approved PR1");
+    await tick();
+    expect(app.lastFrame()).not.toContain("approving…");
+  });
+
+  test("? renders two-column help at 100 columns without clipping filter syntax", async () => {
+    const app = setup(async () => queue, {}, null, {}, 2, [AGENTS.claude, AGENTS.gemini]);
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "?");
+    const frame = app.lastFrame()!;
+    expect(frame).toContain("Navigation");
+    expect(frame).toContain("Actions & Reviews");
+    expect(frame).toContain("filter (terms, @author, ci:, is:draft)");
+    expect(frame).toContain("post draft (works in details too)");
+    expect(frame).toContain("any key to close");
+  });
+
+  test("? scrolls cleanly at 80x24 with two agents", async () => {
+    const app = setup(async () => queue, {}, null, {}, 2, [AGENTS.claude, AGENTS.gemini]);
+    cleanup = app.unmount;
+    await tick();
+    Object.defineProperty(app.stdout, "columns", { value: 80, configurable: true });
+    Object.defineProperty(app.stdout, "rows", { value: 24, configurable: true });
+    app.stdout.emit("resize");
+    await tick();
+    await press(app, "?");
+    let frame = app.lastFrame()!;
+    expect(frame).toContain("move (or scroll in details)");
+    expect(frame).toContain("half page / full page");
+    expect(frame).toContain("↓ 1 more · j/k scroll · any other key to close");
+    expect(frame.split("\n").length).toBeLessThanOrEqual(24);
+    await press(app, "j");
+    frame = app.lastFrame()!;
+    expect(frame).toContain("cancel review or discard draft");
+    expect(frame).toContain("↑ 1 · j/k scroll · any other key to close");
+    await press(app, "q");
+    expect(app.lastFrame()).toContain("▾ NEEDS RE-REVIEW (1)");
+  });
+
+  test("showDetailByDefault auto stays closed at 120 columns and opens at 180", async () => {
+    const renderAtWidth = async (columns: number) => {
+      const frames: string[] = [];
+      const stdout = Object.assign(new EventEmitter(), {
+        columns,
+        rows: 24,
+        isTTY: true,
+        write: (chunk: string) => {
+          frames.push(chunk);
+          return true;
+        },
+      }) as unknown as NodeJS.WriteStream;
+      const stdin = Object.assign(new EventEmitter(), {
+        isTTY: true,
+        setRawMode: () => {},
+        setEncoding: () => {},
+        resume: () => {},
+        pause: () => {},
+        ref: () => {},
+        unref: () => {},
+        read: () => null,
+      }) as unknown as NodeJS.ReadStream;
+      const instance = inkRender(
+        React.createElement(App, {
+          load: async () => queue,
+          initial: queue,
+          actions: {
+            open: vi.fn(() => ""),
+            openFiles: vi.fn(),
+            copy: vi.fn(() => ""),
+            approve: vi.fn(async () => ""),
+            checkoutBlocker: vi.fn(() => null),
+            loadDetails: vi.fn(async () => ""),
+            bell: vi.fn(),
+          },
+          reviewer: {
+            run: vi.fn(async () => DRAFT),
+            post: vi.fn(async () => ""),
+            loadDrafts: vi.fn(() => []),
+            saveDraft: vi.fn(),
+            removeDraft: vi.fn(),
+          },
+          review: { maxConcurrent: 2, confirmBeforePosting: true },
+          agents: [AGENTS.claude],
+          collapseWaitingByDefault: true,
+          showDetailByDefault: "auto",
+          autoRefreshSeconds: 0,
+          onCheckout: vi.fn(),
+          onHandoff: vi.fn(),
+        }),
+        { stdout, stdin, patchConsole: false, debug: true },
+      );
+      await tick();
+      instance.unmount();
+      return frames.join("");
+    };
+
+    expect(AUTO_DETAIL_MIN_COLUMNS).toBe(180);
+    expect(await renderAtWidth(120)).not.toContain("J/K scroll");
+    expect(await renderAtWidth(180)).toContain("J/K scroll");
   });
 });

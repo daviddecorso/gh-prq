@@ -14,23 +14,27 @@ export interface Reviewer {
   removeDraft(pr: ClassifiedPR): void;
 }
 
+type ReadyJob = { agent: Agent; status: "ready"; headOid: string; draft: ReviewDraft };
+
 export type ReviewJob = { agent: Agent } & (
-  | { status: "queued" | "running"; pr: ClassifiedPR; startedAt: number }
+  | { status: "queued" | "running"; pr: ClassifiedPR; startedAt: number; previous?: ReadyJob }
   | { status: "failed"; pr: ClassifiedPR; error: string }
-  | { status: "ready" | "posting"; headOid: string; draft: ReviewDraft }
+  | { status: "ready"; headOid: string; draft: ReviewDraft }
+  | { status: "posting"; headOid: string; draft: ReviewDraft }
 );
 
 export interface ReviewsState {
   jobs: ReadonlyMap<string, ReviewJob>;
   activeCount: number;
-  start(pr: ClassifiedPR, agent: Agent): string;
+  start(pr: ClassifiedPR, agent: Agent, opts?: { replace?: boolean }): string;
   /** Cancels a queued/running job or discards a draft or failure. */
   discard(pr: ClassifiedPR): string;
   post(pr: ClassifiedPR, event: ReviewEvent, onDone: (status: string, posted: boolean) => void): void;
   abortAll(): void;
 }
 
-const isActive = (job: ReviewJob | undefined) => job?.status === "queued" || job?.status === "running";
+const isActive = (job: ReviewJob | undefined): job is Extract<ReviewJob, { status: "queued" | "running" }> =>
+  job?.status === "queued" || job?.status === "running";
 
 export type ReviewSettled = (pr: ClassifiedPR, agent: Agent, outcome: { ok: true } | { ok: false; error: string }) => void;
 
@@ -64,10 +68,10 @@ export function useReviews(reviewer: Reviewer, maxConcurrent: number, onSettled?
       if (running >= maxConcurrent) break;
       if (job.status !== "queued") continue;
       running++;
-      const { pr, agent } = job;
+      const { pr, agent, previous } = job;
       const controller = new AbortController();
       controllers.current.set(id, controller);
-      update(id, { status: "running", agent, pr, startedAt: Date.now() });
+      update(id, { status: "running", agent, pr, startedAt: Date.now(), ...(previous && { previous }) });
       reviewer
         .run(pr, agent, controller.signal)
         .then((draft) => {
@@ -78,7 +82,7 @@ export function useReviews(reviewer: Reviewer, maxConcurrent: number, onSettled?
         })
         .catch((err: Error) => {
           if (controller.signal.aborted) return;
-          update(id, { status: "failed", agent, pr, error: err.message });
+          update(id, previous ?? { status: "failed", agent, pr, error: err.message });
           settledRef.current?.(pr, agent, { ok: false, error: err.message });
         })
         .finally(() => {
@@ -92,11 +96,16 @@ export function useReviews(reviewer: Reviewer, maxConcurrent: number, onSettled?
   }, []);
   React.useEffect(() => abortAll, [abortAll]);
 
-  const start = (pr: ClassifiedPR, agent: Agent) => {
+  const start = (pr: ClassifiedPR, agent: Agent, { replace = false } = {}) => {
     const job = jobs.get(pr.id);
-    if (isActive(job)) return `${job!.agent.label} is already reviewing this PR`;
-    if (job?.status === "ready" || job?.status === "posting") return "A draft already exists (x to discard it first)";
-    update(pr.id, { status: "queued", agent, pr, startedAt: Date.now() });
+    if (isActive(job)) return `${job.agent.label} is already reviewing this PR`;
+    if (job?.status === "posting") return "Post in progress";
+    let previous: ReadyJob | undefined;
+    if (job?.status === "ready") {
+      if (!replace) return "A draft already exists (x to discard it first)";
+      previous = job;
+    }
+    update(pr.id, { status: "queued", agent, pr, startedAt: Date.now(), ...(previous && { previous }) });
     return `${agent.label} is reviewing ${pr.repo}#${pr.number}`;
   };
 
@@ -106,7 +115,7 @@ export function useReviews(reviewer: Reviewer, maxConcurrent: number, onSettled?
     if (job.status === "posting") return "Post in progress";
     controllers.current.get(pr.id)?.abort();
     if (job.status === "ready") reviewer.removeDraft(pr);
-    update(pr.id, null);
+    update(pr.id, isActive(job) && job.previous ? job.previous : null);
     return isActive(job) ? "Review cancelled" : "Draft discarded";
   };
 

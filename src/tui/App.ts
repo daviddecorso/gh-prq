@@ -1,12 +1,13 @@
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import React from "react";
-import { relativeTime } from "../core/format.ts";
+import { displayWidth, relativeTime } from "../core/format.ts";
 import { ACTIONABLE_BUCKETS, WAITING_BUCKETS, type BucketId, type ClassifiedPR, type QueueResult } from "../core/types.ts";
 import type { Config } from "../core/config.ts";
 import { AGENT_IDS, type Agent } from "../core/review/agents.ts";
 import { EVENT_FOR_VERDICT, type ReviewEvent } from "../core/review/post.ts";
 import type { Actions } from "./actions.ts";
-import { DetailPane } from "./DetailPane.ts";
+import { buildDetailLines, DetailPane, maxDetailScroll } from "./DetailPane.ts";
+import { buildDetailsViewLines, DetailsView, type DetailsBody } from "./DetailsView.ts";
 import { adjacentHeader, bucketOfRow, buildRows, clampCursor, keyHints, restoreCursor, rowKey, scrollWindow } from "./model.ts";
 import { QueueList } from "./QueueList.ts";
 import { useQueue, type QueueLoader } from "./useQueue.ts";
@@ -15,14 +16,20 @@ import { useReviews, type Reviewer, type ReviewSettled } from "./useReviews.ts";
 const h = React.createElement;
 
 const SIDE_DETAIL_MIN_COLUMNS = 120;
+export const AUTO_DETAIL_MIN_COLUMNS = 180;
 const BOTTOM_DETAIL_HEIGHT = 12;
-/** Header, footer rule, footer text, and one spare line so Ink never renders taller than the terminal. */
-const CHROME_LINES = 4;
+const TWO_COL_HELP_MIN_COLUMNS = 96;
+/** Header, footer rule, 1-line footer, and one spare line so Ink never renders taller than the terminal. */
+const BASE_CHROME_LINES = 4;
 const STATUS_MS = 3000;
 const ERROR_MS = 8000;
 const CLOCK_MS = 30_000;
+const FAST_CLOCK_MS = 1000;
+const SPINNER_MS = 200;
+const SPINNER_FRAMES = ["◐", "◓", "◑", "◒"] as const;
 const MAX_WARNINGS = 2;
 const NO_ITEMS: ClassifiedPR[] = [];
+const NO_LINES: readonly string[] = [];
 
 const firstLine = (text: string) => text.split(/\r?\n/, 1)[0]!;
 const ref = (pr: ClassifiedPR) => `${pr.repo}#${pr.number}`;
@@ -34,26 +41,30 @@ const POST_CHOICES: readonly { key: string; event: ReviewEvent; label: string }[
   { key: "p", event: "PENDING", label: "pending" },
 ];
 
-const HELP_LINES: [string, string][] = [
-  ["j / k / ↓ / ↑", "move"],
-  ["ctrl-d/u pgdn/up", "half page / full page"],
+const NAV_HELP_LINES: [string, string][] = [
+  ["j/k / ↑/↓", "move (or scroll in details)"],
+  ["^d/^u pgdn/up", "half page / full page"],
   ["g / G", "top / bottom"],
   ["] / [", "next / previous bucket"],
   ["space / tab", "fold or unfold the bucket"],
-  ["enter / o", "open in browser (enter folds on a bucket)"],
-  ["/", "filter by repo, title, or @author (esc clears)"],
+  ["enter / o", "open in browser (enter folds bucket)"],
+  ["/", "filter (terms, @author, ci:, is:draft)"],
+  ["i", "toggle the info pane"],
+  ["J / K", "scroll the info pane"],
+  ["r", "refresh"],
+  ["q / esc", "quit (esc closes panes/filters first)"],
+];
+
+const ACTION_HELP_LINES: [string, string][] = [
+  ["d", "full details & draft reader"],
   ["c", "check out (exits)"],
   ["y", "copy URL"],
-  ["d", "full details, with the review draft first if there is one"],
-  ["i", "toggle the info pane"],
-  ["a", "the active agent drafts a review in the background"],
-  ["A", "interactive review session with the active agent (exits)"],
+  ["a", "agent drafts a review in background"],
+  ["A", "interactive agent session (exits)"],
   ["m", "switch the active agent"],
-  ["p", "post the draft: comment, approve, request changes, or pending"],
+  ["p", "post draft (works in details too)"],
   ["v", "approve"],
-  ["x", "cancel the review or discard the draft"],
-  ["r", "refresh"],
-  ["q / esc", "quit"],
+  ["x", "cancel review or discard draft"],
 ];
 
 export interface AppProps {
@@ -65,6 +76,7 @@ export interface AppProps {
   /** Installed agents; the first is active at startup. */
   agents: readonly Agent[];
   collapseWaitingByDefault: boolean;
+  showDetailByDefault?: "auto" | boolean;
   autoRefreshSeconds: number;
   onCheckout: (pr: ClassifiedPR) => void;
   onHandoff: (pr: ClassifiedPR, agent: Agent) => void;
@@ -74,6 +86,13 @@ interface Confirm {
   prompt: string;
   /** Keyed by input character, or "enter". Any other key cancels. */
   choices: Record<string, () => void>;
+}
+
+interface DetailsState {
+  prId: string;
+  pr: ClassifiedPR;
+  body: DetailsBody;
+  scroll: number;
 }
 
 const yesNo = (prompt: string, onYes: () => void): Confirm => ({ prompt, choices: { y: onYes, Y: onYes } });
@@ -90,13 +109,23 @@ function useTerminalSize() {
   return size;
 }
 
-function useNow() {
+function useNow(fast: boolean) {
   const [now, setNow] = React.useState(Date.now);
   React.useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), CLOCK_MS);
+    const timer = setInterval(() => setNow(Date.now()), fast ? FAST_CLOCK_MS : CLOCK_MS);
     return () => clearInterval(timer);
-  }, []);
+  }, [fast]);
   return now;
+}
+
+function useSpinner(active: boolean) {
+  const [frame, setFrame] = React.useState(0);
+  React.useEffect(() => {
+    if (!active) return;
+    const timer = setInterval(() => setFrame((n) => (n + 1) % SPINNER_FRAMES.length), SPINNER_MS);
+    return () => clearInterval(timer);
+  }, [active]);
+  return active ? SPINNER_FRAMES[frame]! : SPINNER_FRAMES[0];
 }
 
 interface Status {
@@ -116,6 +145,14 @@ function useStatus() {
   return { status, info, error };
 }
 
+function renderRule(width: number, label: string | null): string {
+  if (width <= 0) return "";
+  if (!label || label.length + 4 >= width) return "─".repeat(width);
+  const left = 2;
+  const right = Math.max(0, width - left - label.length);
+  return `${"─".repeat(left)}${label}${"─".repeat(right)}`;
+}
+
 export function App({
   load,
   initial,
@@ -124,13 +161,13 @@ export function App({
   review,
   agents,
   collapseWaitingByDefault,
+  showDetailByDefault = false,
   autoRefreshSeconds,
   onCheckout,
   onHandoff,
 }: AppProps) {
   const { exit } = useApp();
   const { columns, rows: termRows } = useTerminalSize();
-  const now = useNow();
   const queue = useQueue(load, autoRefreshSeconds, initial);
   const { status, info, error } = useStatus();
   const onReviewSettled: ReviewSettled = (pr, agent, outcome) => {
@@ -139,12 +176,22 @@ export function App({
     else error(`${agent.label} review failed for ${ref(pr)}: ${firstLine(outcome.error)}`);
   };
   const reviews = useReviews(reviewer, review.maxConcurrent, onReviewSettled);
+  const jobsRef = React.useRef(reviews.jobs);
+  jobsRef.current = reviews.jobs;
   const [agentIndex, setAgentIndex] = React.useState(0);
   const activeAgent = agents[agentIndex];
   const canSwitchAgent = agents.length > 1;
   const [confirm, setConfirm] = React.useState<Confirm | null>(null);
   const [quitArmed, setQuitArmed] = React.useState(false);
-  const approving = React.useRef(new Set<string>());
+  const approvingRef = React.useRef(new Set<string>());
+  const [approving, setApproving] = React.useState<ReadonlySet<string>>(() => new Set());
+  const [details, setDetails] = React.useState<DetailsState | null>(null);
+  const detailsAbort = React.useRef<AbortController | null>(null);
+
+  const now = useNow(reviews.activeCount > 0);
+  const spinner = useSpinner(reviews.activeCount > 0 || queue.refreshing || approving.size > 0 || Boolean(details?.body.loading));
+
+  React.useEffect(() => () => detailsAbort.current?.abort(), []);
 
   const [collapsed, setCollapsed] = React.useState<ReadonlySet<BucketId>>(
     () => new Set(collapseWaitingByDefault ? WAITING_BUCKETS : []),
@@ -154,15 +201,22 @@ export function App({
   // Selection is tracked by row key so it follows the same PR when a refresh reorders rows.
   const [selection, setSelection] = React.useState<{ key: string; index: number | null } | null>(null);
   const [scrollStart, setScrollStart] = React.useState(0);
-  const [showDetail, setShowDetail] = React.useState(false);
+  const [showDetail, setShowDetail] = React.useState(() =>
+    showDetailByDefault === "auto" ? columns >= AUTO_DETAIL_MIN_COLUMNS : Boolean(showDetailByDefault),
+  );
+  const [detailScroll, setDetailScroll] = React.useState(0);
   const [showHelp, setShowHelp] = React.useState(false);
+  const [helpScroll, setHelpScroll] = React.useState(0);
 
   const items = queue.result?.items ?? NO_ITEMS;
-  const rows = React.useMemo(() => buildRows(items, collapsed, filter), [items, collapsed, filter]);
+  const rows = React.useMemo(() => buildRows(items, collapsed, filter, reviews.jobs), [items, collapsed, filter, reviews.jobs]);
   const cursor = restoreCursor(selection, rows);
   const current = rows[cursor];
+  const currentKey = current ? rowKey(current) : null;
   const currentJob = current?.kind === "pr" ? reviews.jobs.get(current.pr.id) : undefined;
   const filterActive = filter.trim() !== "";
+
+  React.useEffect(() => setDetailScroll(0), [currentKey]);
 
   const select = (index: number) => {
     const next = clampCursor(index, rows.length);
@@ -175,19 +229,53 @@ export function App({
     setSelection((s) => (s ? { key: s.key, index: null } : null));
   };
 
-  const sideDetail = showDetail && columns >= SIDE_DETAIL_MIN_COLUMNS;
-  const showBottomDetail = showDetail && !sideDetail && Boolean(queue.result) && !showHelp;
+  const detailsOpen = details !== null;
+  const detailsPR = details ? (items.find((p) => p.id === details.prId) ?? details.pr) : null;
+  const detailsJob = details ? reviews.jobs.get(details.prId) : undefined;
+
+  const sideDetail = showDetail && !detailsOpen && columns >= SIDE_DETAIL_MIN_COLUMNS;
+  const showBottomDetail = showDetail && !detailsOpen && !sideDetail && Boolean(queue.result) && !showHelp;
   const warnings = queue.result?.warnings ?? [];
   const bannerLines =
     (queue.result?.staleReason ? 1 : 0) + Math.min(warnings.length, MAX_WARNINGS + 1) + (queue.error ? 1 : 0);
+  const confirmExtraLines = confirm ? Math.max(0, Math.ceil(displayWidth(confirm.prompt) / Math.max(1, columns)) - 1) : 0;
   const listHeight = Math.max(
     3,
-    termRows - CHROME_LINES - bannerLines - (showBottomDetail ? BOTTOM_DETAIL_HEIGHT : 0),
+    termRows - BASE_CHROME_LINES - confirmExtraLines - bannerLines - (showBottomDetail ? BOTTOM_DETAIL_HEIGHT : 0),
   );
   const listWidth = sideDetail ? Math.floor(columns * 0.58) : columns;
+  const detailWidth = sideDetail ? columns - listWidth : columns;
+  const detailHeight = sideDetail ? listHeight : BOTTOM_DETAIL_HEIGHT;
 
   const start = scrollWindow(cursor, rows.length, listHeight, scrollStart);
   React.useEffect(() => setScrollStart(start), [start]);
+
+  const detailMaxScroll =
+    showDetail && !detailsOpen
+      ? maxDetailScroll(buildDetailLines(current, detailWidth, now, currentJob, spinner).length, detailHeight)
+      : 0;
+  const detailsContentWidth = Math.max(20, columns - 2);
+  const detailsDraft =
+    detailsJob?.status === "ready" || detailsJob?.status === "posting"
+      ? { draft: detailsJob.draft, agent: detailsJob.agent }
+      : null;
+  const detailsBody = details?.body;
+  const detailsStaticLines = React.useMemo(
+    () => (detailsBody ? buildDetailsViewLines(detailsDraft, detailsBody, detailsContentWidth) : NO_LINES),
+    [detailsDraft?.draft, detailsDraft?.agent, detailsBody, detailsContentWidth],
+  );
+  const detailsLines = detailsBody?.loading
+    ? [...detailsStaticLines, ...(detailsStaticLines.length ? [""] : []), `\x1b[33m${spinner} Loading PR details…\x1b[0m`]
+    : detailsStaticLines;
+  const detailsMaxScroll = details ? Math.max(0, detailsLines.length - Math.max(1, listHeight - 2)) : 0;
+
+  const actionHelp = ACTION_HELP_LINES.filter(([keys]) => keys !== "m" || canSwitchAgent);
+  const twoColHelp = columns >= TWO_COL_HELP_MIN_COLUMNS;
+  const helpVisibleHeight = Math.max(1, listHeight - 1);
+  const helpRowCount = twoColHelp
+    ? 1 + Math.max(NAV_HELP_LINES.length, actionHelp.length)
+    : NAV_HELP_LINES.length + actionHelp.length;
+  const helpMaxScroll = Math.max(0, helpRowCount - helpVisibleHeight);
 
   const toggleFold = () => {
     if (!current || filterActive) return;
@@ -217,9 +305,117 @@ export function App({
     else error(`No review agent found (install ${AGENT_IDS.join(", ")})`);
   };
 
+  const closeDetails = () => {
+    detailsAbort.current?.abort();
+    detailsAbort.current = null;
+    setDetails(null);
+  };
+
+  const openDetails = (pr: ClassifiedPR) => {
+    detailsAbort.current?.abort();
+    const controller = new AbortController();
+    detailsAbort.current = controller;
+    setDetails({ prId: pr.id, pr, body: { loading: true, text: null, error: null }, scroll: 0 });
+    actions
+      .loadDetails(pr, { width: Math.max(20, columns - 2), signal: controller.signal })
+      .then((text) => {
+        if (controller.signal.aborted) return;
+        setDetails((prev) => (prev?.prId === pr.id ? { ...prev, body: { loading: false, text, error: null } } : prev));
+      })
+      .catch((err: Error) => {
+        if (controller.signal.aborted) return;
+        const msg = firstLine(err.message);
+        const status = jobsRef.current.get(pr.id)?.status;
+        if (status === "ready" || status === "posting") {
+          setDetails((prev) => (prev?.prId === pr.id ? { ...prev, body: { loading: false, text: null, error: msg } } : prev));
+        } else {
+          setDetails((prev) => (prev?.prId === pr.id ? null : prev));
+          error(msg);
+        }
+      });
+  };
+
+  const startReview = (pr: ClassifiedPR) =>
+    withAgent((agent) => {
+      const job = reviews.jobs.get(pr.id);
+      if (job?.status === "ready" && job.headOid !== pr.headOid) {
+        setConfirm(yesNo(`Draft is stale — re-run ${agent.label} on ${ref(pr)}? y/n`, () => info(reviews.start(pr, agent, { replace: true }))));
+      } else {
+        info(reviews.start(pr, agent));
+      }
+    });
+
+  const postReview = (pr: ClassifiedPR) => {
+    const job = reviews.jobs.get(pr.id);
+    if (job?.status !== "ready") return info("No draft to post (a to start one)");
+    const stale = job.headOid !== pr.headOid ? " (stale)" : "";
+    // GitHub rejects approving or requesting changes on your own PR.
+    const own = pr.author === queue.result?.viewer;
+    const options = POST_CHOICES.filter((c) => !own || c.event === "COMMENT" || c.event === "PENDING");
+    const suggested = options.find((c) => c.event === EVENT_FOR_VERDICT[job.draft.suggestedVerdict]) ?? options[0]!;
+    const submit = (event: ReviewEvent) =>
+      reviews.post(pr, event, (msg, posted) => {
+        if (!posted) return error(msg);
+        info(msg);
+        if (event === "PENDING") actions.openFiles(pr);
+        else queue.refresh();
+      });
+    const choices: Confirm["choices"] = { enter: () => submit(suggested.event) };
+    for (const c of options) choices[c.key] = () => submit(c.event);
+    setConfirm({
+      prompt: `Post to ${ref(pr)}${stale}: ${options.map((c) => `${c.key} ${c.label}`).join(" · ")} · enter ${suggested.label} · esc cancel`,
+      choices,
+    });
+  };
+
+  const approveReview = (pr: ClassifiedPR) => {
+    if (pr.author === queue.result?.viewer) return info("You can't approve your own PR");
+    if (approvingRef.current.has(pr.id)) return info(`Already approving ${ref(pr)}`);
+    // Always asks: an approval is public the moment it lands, unlike a pending review.
+    setConfirm(
+      yesNo(`Approve ${ref(pr)}? y/n`, () => {
+        approvingRef.current.add(pr.id);
+        setApproving(new Set(approvingRef.current));
+        info(`Approving ${ref(pr)}…`);
+        actions
+          .approve(pr)
+          .then((msg) => {
+            info(msg);
+            queue.refresh();
+          })
+          .catch((err: Error) => error(err.message))
+          .finally(() => {
+            approvingRef.current.delete(pr.id);
+            setApproving(new Set(approvingRef.current));
+          });
+      }),
+    );
+  };
+
+  const discardReview = (pr: ClassifiedPR) => {
+    const job = reviews.jobs.get(pr.id);
+    if (!job) return info("Nothing to cancel or discard");
+    if (job.status === "ready") confirmThen(`Discard the ${job.agent.label} draft for ${ref(pr)}? y/n`, () => info(reviews.discard(pr)));
+    else info(reviews.discard(pr));
+  };
+
   useInput((input, key) => {
     if (showHelp) {
+      if (helpMaxScroll > 0) {
+        const scrollHelp = (delta: number) => setHelpScroll((s) => Math.max(0, Math.min(helpMaxScroll, s + delta)));
+        if (key.downArrow) return scrollHelp(1);
+        if (key.upArrow) return scrollHelp(-1);
+        if (key.pageDown) return scrollHelp(helpVisibleHeight);
+        if (key.pageUp) return scrollHelp(-helpVisibleHeight);
+        if (key.ctrl && input === "d") return scrollHelp(Math.ceil(helpVisibleHeight / 2));
+        if (key.ctrl && input === "u") return scrollHelp(-Math.ceil(helpVisibleHeight / 2));
+        if (/^[jk]+$/.test(input)) {
+          const moves = [...input].reduce((n, ch) => n + (ch === "j" ? 1 : -1), 0);
+          return scrollHelp(moves);
+        }
+      }
       setShowHelp(false);
+      setHelpScroll(0);
       return;
     }
     if (confirm) {
@@ -235,6 +431,10 @@ export function App({
         setFilterEditing(false);
       } else if (key.return) {
         setFilterEditing(false);
+      } else if (key.ctrl && input === "u") {
+        setFilter("");
+      } else if (key.ctrl && input === "w") {
+        setFilter((f) => f.replace(/\S+\s*$/, ""));
       } else if (key.backspace || key.delete) {
         setFilter((f) => f.slice(0, -1));
       } else if (input && !key.ctrl && !key.meta && !/[\x00-\x1f]/.test(input)) {
@@ -246,9 +446,47 @@ export function App({
       }
       return;
     }
+    if (details && detailsPR) {
+      const scrollBy = (delta: number) =>
+        setDetails((prev) => (prev ? { ...prev, scroll: Math.max(0, Math.min(detailsMaxScroll, prev.scroll + delta)) } : prev));
+      const page = Math.max(1, listHeight - 2);
+      if (key.escape || input === "q" || (input === "d" && !key.ctrl)) return closeDetails();
+      if (input === "?") {
+        setHelpScroll(0);
+        return setShowHelp(true);
+      }
+      if (key.downArrow) return scrollBy(1);
+      if (key.upArrow) return scrollBy(-1);
+      if (key.pageDown || input === " ") return scrollBy(page);
+      if (key.pageUp) return scrollBy(-page);
+      if (key.ctrl && input === "d") return scrollBy(Math.ceil(page / 2));
+      if (key.ctrl && input === "u") return scrollBy(-Math.ceil(page / 2));
+      if (/^[jk]+$/.test(input)) {
+        const moves = [...input].reduce((n, ch) => n + (ch === "j" ? 1 : -1), 0);
+        return scrollBy(moves);
+      }
+      if (input === "g") return setDetails((prev) => (prev ? { ...prev, scroll: 0 } : prev));
+      if (input === "G") return setDetails((prev) => (prev ? { ...prev, scroll: detailsMaxScroll } : prev));
+      if (input === "o") return info(actions.open(detailsPR));
+      if (input === "y") return info(actions.copy(detailsPR));
+      if (input === "p") return postReview(detailsPR);
+      if (input === "v") return approveReview(detailsPR);
+      if (input === "a") return startReview(detailsPR);
+      if (input === "x") return discardReview(detailsPR);
+      if (input === "m" && canSwitchAgent) {
+        const next = (agentIndex + 1) % agents.length;
+        setAgentIndex(next);
+        return info(`Reviews now use ${agents[next]!.label}`);
+      }
+      return;
+    }
+
     const armed = quitArmed;
     setQuitArmed(false);
-    if (key.escape && filterActive) return setFilter("");
+    if (key.escape) {
+      if (filterActive) return setFilter("");
+      if (showDetail) return setShowDetail(false);
+    }
     if (input === "q" || key.escape) {
       const guard = runningGuard("q again to quit and cancel them");
       if (guard && !armed) {
@@ -269,6 +507,10 @@ export function App({
       const moves = [...input].reduce((n, ch) => n + (ch === "j" ? 1 : -1), 0);
       return select(cursor + moves);
     }
+    if (/^[JK]+$/.test(input) && showDetail) {
+      const moves = [...input].reduce((n, ch) => n + (ch === "J" ? 1 : -1), 0);
+      return setDetailScroll((s) => Math.max(0, Math.min(detailMaxScroll, s + moves)));
+    }
     if (input === "g") return select(0);
     if (input === "G") return select(rows.length - 1);
     if (input === "]") return select(adjacentHeader(rows, cursor, 1));
@@ -277,14 +519,11 @@ export function App({
     if (input === " " || key.tab) return toggleFold();
     if (key.return && current?.kind === "header") return toggleFold();
     if (input === "i") return setShowDetail((v) => !v);
-    if (input === "d") {
-      return withPR((pr) => {
-        const job = reviews.jobs.get(pr.id);
-        const err = job?.status === "ready" ? actions.viewDetails(pr, job) : actions.viewDetails(pr);
-        if (err) error(err);
-      });
+    if (input === "d") return withPR(openDetails);
+    if (input === "?") {
+      setHelpScroll(0);
+      return setShowHelp(true);
     }
-    if (input === "?") return setShowHelp(true);
     if (input === "r") return queue.refresh();
     if (input === "o" || key.return) return withPR((pr) => info(actions.open(pr)));
     if (input === "y") return withPR((pr) => info(actions.copy(pr)));
@@ -298,7 +537,7 @@ export function App({
         exit();
       });
     }
-    if (input === "a") return withPR((pr) => withAgent((agent) => info(reviews.start(pr, agent))));
+    if (input === "a") return withPR(startReview);
     if (input === "A") {
       return withPR((pr) =>
         withAgent((agent) => {
@@ -314,65 +553,16 @@ export function App({
       setAgentIndex(next);
       return info(`Reviews now use ${agents[next]!.label}`);
     }
-    if (input === "p") {
-      return withPR((pr) => {
-        const job = reviews.jobs.get(pr.id);
-        if (job?.status !== "ready") return info("No draft to post (a to start one)");
-        const stale = job.headOid !== pr.headOid ? " (draft is for an older commit)" : "";
-        // GitHub rejects approving or requesting changes on your own PR.
-        const own = pr.author === queue.result?.viewer;
-        const options = POST_CHOICES.filter((c) => !own || c.event === "COMMENT" || c.event === "PENDING");
-        const suggested = options.find((c) => c.event === EVENT_FOR_VERDICT[job.draft.suggestedVerdict]) ?? options[0]!;
-        const submit = (event: ReviewEvent) =>
-          reviews.post(pr, event, (msg, posted) => {
-            if (!posted) return error(msg);
-            info(msg);
-            if (event === "PENDING") actions.openFiles(pr);
-            else queue.refresh();
-          });
-        const choices: Confirm["choices"] = { enter: () => submit(suggested.event) };
-        for (const c of options) choices[c.key] = () => submit(c.event);
-        setConfirm({
-          prompt: `Post to ${ref(pr)}${stale}: ${options.map((c) => `${c.key} ${c.label}`).join(" · ")} · enter ${suggested.label} · esc cancel`,
-          choices,
-        });
-      });
-    }
-    if (input === "v") {
-      return withPR((pr) => {
-        if (pr.author === queue.result?.viewer) return info("You can't approve your own PR");
-        if (approving.current.has(pr.id)) return info(`Already approving ${ref(pr)}`);
-        // Always asks: an approval is public the moment it lands, unlike a pending review.
-        setConfirm(
-          yesNo(`Approve ${ref(pr)}? y/n`, () => {
-            approving.current.add(pr.id);
-            info(`Approving ${ref(pr)}…`);
-            actions
-              .approve(pr)
-              .then((msg) => {
-                info(msg);
-                queue.refresh();
-              })
-              .catch((err: Error) => error(err.message))
-              .finally(() => approving.current.delete(pr.id));
-          }),
-        );
-      });
-    }
-    if (input === "x") {
-      return withPR((pr) => {
-        const job = reviews.jobs.get(pr.id);
-        if (!job) return info("Nothing to cancel or discard");
-        if (job.status === "ready") confirmThen(`Discard the ${job.agent.label} draft for ${ref(pr)}? y/n`, () => info(reviews.discard(pr)));
-        else info(reviews.discard(pr));
-      });
-    }
+    if (input === "p") return withPR(postReview);
+    if (input === "v") return withPR(approveReview);
+    if (input === "x") return withPR(discardReview);
   });
 
   const result = queue.result;
   const actionable = items.filter((i) => ACTIONABLE_BUCKETS.has(i.bucket)).length;
   const waiting = items.filter((i) => WAITING_BUCKETS.has(i.bucket)).length;
   const matchCount = rows.filter((r) => r.kind === "pr").length;
+  const readyCount = items.reduce((n, pr) => n + (reviews.jobs.get(pr.id)?.status === "ready" ? 1 : 0), 0);
 
   const header = h(
     Text,
@@ -386,10 +576,11 @@ export function App({
           `${actionable} actionable · ${waiting} waiting · updated ${relativeTime(result.fetchedAt, now)} ago`,
         )
       : null,
-    reviews.activeCount > 0 ? h(Text, { color: "magenta" }, `  ◐ ${reviews.activeCount} reviewing`) : null,
+    reviews.activeCount > 0 ? h(Text, { color: "magenta" }, `  ${spinner} ${reviews.activeCount} reviewing`) : null,
+    readyCount > 0 ? h(Text, { color: "magenta" }, `  ✎ ${readyCount} draft${readyCount === 1 ? "" : "s"}`) : null,
     canSwitchAgent ? h(Text, { color: "magenta" }, `  ⇄ ${activeAgent!.id}`) : null,
     filterActive ? h(Text, { color: "cyan" }, `  filter "${filter.trim()}" · ${matchCount} match${matchCount === 1 ? "" : "es"}`) : null,
-    queue.refreshing ? h(Text, { color: "yellow" }, "  refreshing…") : null,
+    queue.refreshing ? h(Text, { color: "yellow" }, `  ${spinner} refreshing…`) : null,
   );
 
   const banners = [
@@ -405,12 +596,65 @@ export function App({
 
   let body: React.ReactNode;
   if (showHelp) {
+    const helpOffset = Math.max(0, Math.min(helpScroll, helpMaxScroll));
+    const helpBelow = Math.max(0, helpRowCount - (helpOffset + helpVisibleHeight));
+    const helpHint =
+      helpMaxScroll > 0
+        ? [helpOffset > 0 ? `↑ ${helpOffset}` : null, helpBelow > 0 ? `↓ ${helpBelow} more` : null, "j/k scroll · any other key to close"]
+            .filter(Boolean)
+            .join(" · ")
+        : "any key to close";
+    let helpRows: React.ReactNode[];
+    if (twoColHelp) {
+      const innerWidth = Math.max(20, columns - 4);
+      const leftWidth = Math.floor(innerWidth * 0.59);
+      const rightWidth = innerWidth - leftWidth;
+      const pairCount = Math.max(NAV_HELP_LINES.length, actionHelp.length);
+      helpRows = [
+        h(
+          Box,
+          { key: "help-hdr", flexDirection: "row", gap: 2 },
+          h(Box, { width: leftWidth }, h(Text, { bold: true, dimColor: true, wrap: "truncate-end" }, "Navigation")),
+          h(Box, { width: rightWidth }, h(Text, { bold: true, dimColor: true, wrap: "truncate-end" }, "Actions & Reviews")),
+        ),
+        ...Array.from({ length: pairCount }, (_, i) => {
+          const left = NAV_HELP_LINES[i];
+          const right = actionHelp[i];
+          return h(
+            Box,
+            { key: `help-${i}`, flexDirection: "row", gap: 2 },
+            h(
+              Box,
+              { width: leftWidth },
+              left ? h(Text, { wrap: "truncate-end" }, h(Text, { color: "cyan" }, left[0].padEnd(15)), left[1]) : h(Text, null, " "),
+            ),
+            h(
+              Box,
+              { width: rightWidth },
+              right ? h(Text, { wrap: "truncate-end" }, h(Text, { color: "cyan" }, right[0].padEnd(3)), right[1]) : h(Text, null, " "),
+            ),
+          );
+        }),
+      ];
+    } else {
+      helpRows = [...NAV_HELP_LINES, ...actionHelp].map(([keys, what]) =>
+        h(Text, { key: keys, wrap: "truncate-end" }, h(Text, { color: "cyan" }, keys.padEnd(15)), what),
+      );
+    }
     body = h(
       Box,
-      { flexDirection: "column", height: listHeight, overflowY: "hidden", paddingX: 2 },
-      ...HELP_LINES.filter(([keys]) => keys !== "m" || canSwitchAgent).map(([keys, what]) => h(Text, { key: keys, wrap: "truncate-end" }, h(Text, { color: "cyan" }, keys.padEnd(18)), what)),
-      h(Text, { dimColor: true, wrap: "truncate-end" }, "any key to close"),
+      { flexDirection: "column", height: listHeight, overflowY: "hidden", paddingX: 1 },
+      ...helpRows.slice(helpOffset, helpOffset + helpVisibleHeight),
+      h(Text, { dimColor: true, wrap: "truncate-end" }, helpHint),
     );
+  } else if (details && detailsPR) {
+    body = h(DetailsView, {
+      pr: detailsPR,
+      lines: detailsLines,
+      width: columns,
+      height: listHeight,
+      scroll: details.scroll,
+    });
   } else if (queue.loading) {
     body = h(Box, { height: listHeight }, h(Text, { dimColor: true }, "Loading your queue…"));
   } else if (!result) {
@@ -420,19 +664,51 @@ export function App({
   } else if (rows.length === 0) {
     body = h(Box, { height: listHeight }, h(Text, null, "Nothing in your queue."));
   } else {
-    const list = h(QueueList, { rows, cursor, start, height: listHeight, width: listWidth, now, jobs: reviews.jobs });
+    const list = h(QueueList, {
+      rows,
+      cursor,
+      start,
+      height: listHeight,
+      width: listWidth,
+      now,
+      jobs: reviews.jobs,
+      viewer: result.viewer,
+      approving,
+      spinner,
+    });
     body = sideDetail
-      ? h(Box, null, list, h(DetailPane, { row: current, width: columns - listWidth, height: listHeight, now, job: currentJob }))
+      ? h(
+          Box,
+          null,
+          list,
+          h(DetailPane, { row: current, width: detailWidth, height: detailHeight, now, job: currentJob, scroll: detailScroll, spinner }),
+        )
       : list;
   }
 
+  let scrollLabel: string | null = null;
+  if (!showHelp && !detailsOpen && rows.length > listHeight) {
+    const above = start;
+    const below = Math.max(0, rows.length - (start + listHeight));
+    const parts = [above > 0 ? `↑ ${above} above` : null, below > 0 ? `↓ ${below} more` : null].filter(Boolean);
+    if (parts.length) scrollLabel = ` ${parts.join(" · ")} `;
+  }
+
   let footer: React.ReactNode;
-  if (confirm) footer = h(Text, { color: "yellow", wrap: "truncate-end" }, confirm.prompt);
+  if (confirm) footer = h(Text, { color: "yellow", wrap: "wrap" }, confirm.prompt);
   else if (filterEditing) {
-    footer = h(Text, { wrap: "truncate-end" }, h(Text, { color: "cyan" }, `/${filter}▏`), h(Text, { dimColor: true }, "  enter keep · esc clear"));
+    footer = h(Text, { wrap: "truncate-end" }, h(Text, { color: "cyan" }, `/${filter}▏`), h(Text, { dimColor: true }, "  enter keep · esc clear · ctrl-u/w delete"));
   } else if (status) {
     footer = h(Text, { color: status.tone === "error" ? "red" : "cyan", wrap: "truncate-end" }, status.text);
-  } else footer = h(Text, { dimColor: true, wrap: "truncate-end" }, keyHints(current, currentJob, filterActive));
+  } else {
+    const hintRow = detailsOpen && detailsPR ? ({ kind: "pr", pr: detailsPR } as const) : current;
+    const hintJob = detailsOpen ? detailsJob : currentJob;
+    footer = h(
+      Text,
+      { dimColor: true, wrap: "truncate-end" },
+      keyHints(hintRow, hintJob, filterActive, { showDetail, detailsOpen }),
+    );
+  }
 
   return h(
     Box,
@@ -440,8 +716,10 @@ export function App({
     header,
     ...banners,
     body,
-    showBottomDetail ? h(DetailPane, { row: current, width: columns, height: BOTTOM_DETAIL_HEIGHT, now, job: currentJob }) : null,
-    h(Text, { dimColor: true }, "─".repeat(Math.max(0, columns))),
+    showBottomDetail
+      ? h(DetailPane, { row: current, width: columns, height: BOTTOM_DETAIL_HEIGHT, now, job: currentJob, scroll: detailScroll, spinner })
+      : null,
+    h(Text, { dimColor: true }, renderRule(Math.max(0, columns), scrollLabel)),
     footer,
   );
 }

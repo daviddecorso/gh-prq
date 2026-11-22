@@ -1,4 +1,4 @@
-import type { CiState } from "./types.ts";
+import type { BucketId, CiState } from "./types.ts";
 
 export function relativeTime(iso: string, now = Date.now()): string {
   const s = Math.max(0, Math.round((now - Date.parse(iso)) / 1000));
@@ -48,7 +48,7 @@ export function truncate(text: string, width: number): string {
   return `${out}…`;
 }
 
-export type Tone = "green" | "yellow" | "red" | "dim";
+export type Tone = "green" | "yellow" | "red" | "cyan" | "dim";
 
 export const CI_STYLE: Record<CiState, { glyph: string; tone: Tone }> = {
   SUCCESS: { glyph: "✓", tone: "green" },
@@ -57,3 +57,82 @@ export const CI_STYLE: Record<CiState, { glyph: string; tone: Tone }> = {
   ERROR: { glyph: "✗", tone: "red" },
   NONE: { glyph: "·", tone: "dim" },
 };
+
+export const BUCKET_TONE: Record<BucketId, Tone> = {
+  NEEDS_REREVIEW: "yellow",
+  NEEDS_INITIAL_REVIEW: "cyan",
+  MY_PR_ACTION_NEEDED: "yellow",
+  MY_PR_READY: "green",
+  WAITING_ON_AUTHOR: "dim",
+  MY_PR_WAITING: "dim",
+  DRAFTS: "dim",
+};
+
+const ESCAPE_SEQ =
+  /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b\n]*(?:\x07|\x1b\\)?|\x1b[PX^_][^\x1b\n]*(?:\x1b\\)?|\x1b[ -/]*[@-~]|\x9b[0-?]*[ -/]*[@-~]|\x9d[^\x07\x9c\x1b\n]*(?:\x07|\x9c|\x1b\\)?|[\x90\x98\x9e\x9f][^\x9c\x1b\n]*(?:\x9c|\x1b\\)?/g;
+const CONTROL_CHARS = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/g;
+const SGR_RESET = /^\x1b\[0*m$/;
+const SGR_CODE = /^\x1b\[[0-9;]*m$/;
+
+/** Strips terminal escape sequences and control characters (including bare `\r`), preserving `\n` and `\t`. */
+export function stripControlChars(text: string): string {
+  return text.replace(/\r\n/g, "\n").replace(ESCAPE_SEQ, "").replace(CONTROL_CHARS, "");
+}
+
+/** Wraps text to `width` terminal columns, keeping only SGR escapes and stripping control characters. */
+export function wrapAnsiLines(text: string, width: number): string[] {
+  const maxWidth = Math.max(1, width);
+  const out: string[] = [];
+
+  for (const rawLine of text.split(/\r?\n/)) {
+    let activeSgr = "";
+    let line = "";
+    let col = 0;
+    let lastIndex = 0;
+
+    const pushPlain = (chunk: string) => {
+      const clean = chunk.replace(CONTROL_CHARS, "");
+      for (const { segment } of graphemes.segment(clean)) {
+        if (segment === "\t") {
+          const spaces = 4 - (col % 4);
+          if (col + spaces > maxWidth && col > 0) {
+            out.push(activeSgr ? `${line}\x1b[0m` : line);
+            line = activeSgr;
+            col = 0;
+          }
+          const fit = Math.min(spaces, maxWidth - col);
+          line += " ".repeat(fit);
+          col += fit;
+          continue;
+        }
+        const w = graphemeWidth(segment);
+        if (col + w > maxWidth && col > 0) {
+          out.push(activeSgr ? `${line}\x1b[0m` : line);
+          line = activeSgr;
+          col = 0;
+        }
+        line += segment;
+        col += w;
+      }
+    };
+
+    ESCAPE_SEQ.lastIndex = 0;
+    for (const match of rawLine.matchAll(ESCAPE_SEQ)) {
+      const idx = match.index!;
+      if (idx > lastIndex) pushPlain(rawLine.slice(lastIndex, idx));
+      const seq = match[0];
+      if (SGR_RESET.test(seq)) {
+        activeSgr = "";
+        line += seq;
+      } else if (SGR_CODE.test(seq)) {
+        activeSgr += seq;
+        line += seq;
+      }
+      lastIndex = idx + seq.length;
+    }
+    if (lastIndex < rawLine.length) pushPlain(rawLine.slice(lastIndex));
+    out.push(activeSgr ? `${line}\x1b[0m` : line);
+  }
+
+  return out;
+}
