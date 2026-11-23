@@ -51,6 +51,8 @@ If the cwd is a clone of the PR's repo, the agent gets a throwaway `git worktree
 
 A finished draft rings the terminal bell and shows in the info pane (`i`); `d` opens the full details reader with the draft first, where you can scroll and post (`p`) directly. `p` posts it: `c` comment, `a` approve, or `r` request changes submits it right away with the draft's summary as the review body, `p` leaves it as a pending review to edit and submit in the browser, and enter picks the verdict the agent suggested. Then `x` cancels or discards. Drafts persist in `~/.cache/gh-prq/drafts/` across restarts.
 
+`f` is for the other side of a review. It collects everything posted since the PR's last commit (unresolved inline review threads, review summaries, and discussion comments, skipping your own and bots'), runs `gh pr checkout` in the cwd, and opens the active agent interactively on that branch with the feedback as its first prompt. Unlike `a` and `A`, this agent can edit files (with its CLI's normal permission prompts); it's told not to commit or push unless you ask.
+
 ```json
 {
   "agent": {

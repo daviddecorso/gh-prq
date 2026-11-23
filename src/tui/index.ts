@@ -8,7 +8,9 @@ import type { Scope } from "../core/github.ts";
 import { loadCachedQueue, loadQueue } from "../core/queue.ts";
 import { fileDraftStore } from "../core/review/drafts.ts";
 import { availableAgents, type Agent } from "../core/review/agents.ts";
+import { feedbackCount, loadFeedback, type Feedback } from "../core/review/feedback.ts";
 import { postDraft } from "../core/review/post.ts";
+import { buildFixPrompt } from "../core/review/prompt.ts";
 import { agentRun, runHeadlessReview } from "../core/review/runner.ts";
 import { prepareWorkspace } from "../core/review/workspace.ts";
 import type { ClassifiedPR, QueueResult } from "../core/types.ts";
@@ -49,6 +51,20 @@ async function runHandoff(pr: ClassifiedPR, agent: Agent, config: Config): Promi
   }
 }
 
+/** Runs after Ink unmounts: checks out the branch, then hands the terminal to the agent with write access. */
+function runFix(pr: ClassifiedPR, agent: Agent, feedback: Feedback, config: Config): number {
+  const checkedOut = runCheckout(pr);
+  if (checkedOut !== 0) return checkedOut;
+  const { prompt, appendSystemPrompt } = buildFixPrompt(pr, feedback);
+  const n = feedbackCount(feedback);
+  process.stderr.write(`Handing ${n} item${n === 1 ? "" : "s"} of feedback on ${pr.repo}#${pr.number} to ${agent.label}…\n`);
+  const res = spawnSync(agent.id, agent.fix({ prompt, systemPrompt: appendSystemPrompt, model: config.agent.models[agent.id] }), {
+    stdio: "inherit",
+  });
+  if (res.error) throw new Error(`Couldn't start ${agent.id}: ${res.error.message}`);
+  return res.status ?? 1;
+}
+
 /** Resolves with the process exit code. */
 export async function runTui({ config, scope, flags }: RunTuiOptions): Promise<number> {
   const filtered = (result: QueueResult) => ({ ...result, items: filterItems(result, flags, config) });
@@ -67,14 +83,21 @@ export async function runTui({ config, scope, flags }: RunTuiOptions): Promise<n
   };
 
   // Assigned from callbacks, which TS's control-flow narrowing can't see.
-  let after = null as { kind: "checkout"; pr: ClassifiedPR } | { kind: "handoff"; pr: ClassifiedPR; agent: Agent } | null;
+  let after = null as
+    | { kind: "checkout"; pr: ClassifiedPR }
+    | { kind: "handoff"; pr: ClassifiedPR; agent: Agent }
+    | { kind: "fix"; pr: ClassifiedPR; agent: Agent; feedback: Feedback }
+    | null;
 
   await runInAltScreen(() =>
     render(
       React.createElement(App, {
         load,
         initial: cached && filtered(cached),
-        actions: defaultActions,
+        actions: {
+          ...defaultActions,
+          loadFeedback: (pr, viewer, signal) => loadFeedback(pr, viewer, config.filters, undefined, signal),
+        },
         reviewer: makeReviewer(config),
         review: config.agent,
         agents: availableAgents(config.agent.default),
@@ -87,11 +110,15 @@ export async function runTui({ config, scope, flags }: RunTuiOptions): Promise<n
         onHandoff: (pr, agent) => {
           after = { kind: "handoff", pr, agent };
         },
+        onFix: (pr, agent, feedback) => {
+          after = { kind: "fix", pr, agent, feedback };
+        },
       }),
     ),
   );
 
   if (after?.kind === "checkout") return runCheckout(after.pr);
   if (after?.kind === "handoff") return runHandoff(after.pr, after.agent, config);
+  if (after?.kind === "fix") return runFix(after.pr, after.agent, after.feedback, config);
   return 0;
 }

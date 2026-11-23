@@ -108,6 +108,10 @@ describe("keyHints", () => {
     expect(keyHints(rows[1], { status: "ready", agent: AGENTS.claude, headOid: "c1", draft }, false, { detailsOpen: true })).toMatch(
       /^esc back {2}j\/k scroll {2}p post/,
     );
+    const ownRow = { kind: "pr" as const, pr: item("PR9", "MY_PR_ACTION_NEEDED") };
+    expect(keyHints(ownRow, undefined, false)).toContain("f fix comments");
+    expect(keyHints(ownRow, undefined, false, { detailsOpen: true })).toContain("f fix comments");
+    expect(keyHints(ownRow, undefined, false, { detailsOpen: true })).not.toContain("v approve");
   });
 });
 
