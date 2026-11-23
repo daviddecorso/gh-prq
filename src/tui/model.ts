@@ -87,6 +87,7 @@ export function keyHints(
   { showDetail = false, detailsOpen = false }: KeyHintOptions = {},
 ): string {
   if (detailsOpen) {
+    const own = row?.kind === "pr" && row.pr.bucket.startsWith("MY_PR");
     const actions =
       job?.status === "ready"
         ? [
@@ -96,7 +97,9 @@ export function keyHints(
           ]
         : job?.status === "queued" || job?.status === "running"
           ? ["x cancel"]
-          : ["a review", "v approve"];
+          : own
+            ? ["f fix comments"]
+            : ["a review", "v approve"];
     return ["esc back", "j/k scroll", ...actions, "o open", "y copy"].join("  ");
   }
 
@@ -109,6 +112,7 @@ export function keyHints(
   else if (job?.status === "ready") {
     middle = ["d read draft", "p post", ...(stale ? ["a re-review"] : []), "x discard", "o open", "i info"];
   } else if (job?.status === "failed") middle = ["a retry", "x clear", "o open", "i info"];
+  else if (row.pr.bucket.startsWith("MY_PR")) middle = ["o open", "f fix comments", "d details", "i info", "c checkout"];
   else middle = ["o open", "a review", "v approve", "d details", "i info", "c checkout"];
   if (showDetail && row?.kind === "pr") middle = [...middle, "J/K scroll"];
   return ["? help", ...middle, ...tail].join("  ");

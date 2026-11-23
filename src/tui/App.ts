@@ -4,6 +4,7 @@ import { displayWidth, relativeTime } from "../core/format.ts";
 import { ACTIONABLE_BUCKETS, WAITING_BUCKETS, type BucketId, type ClassifiedPR, type QueueResult } from "../core/types.ts";
 import type { Config } from "../core/config.ts";
 import { AGENT_IDS, type Agent } from "../core/review/agents.ts";
+import { feedbackCount, type Feedback } from "../core/review/feedback.ts";
 import { EVENT_FOR_VERDICT, type ReviewEvent } from "../core/review/post.ts";
 import type { Actions } from "./actions.ts";
 import { buildDetailLines, DetailPane, maxDetailScroll } from "./DetailPane.ts";
@@ -58,6 +59,7 @@ const NAV_HELP_LINES: [string, string][] = [
 const ACTION_HELP_LINES: [string, string][] = [
   ["d", "full details & draft reader"],
   ["c", "check out (exits)"],
+  ["f", "check out & fix new comments with agent (exits)"],
   ["y", "copy URL"],
   ["a", "agent drafts a review in background"],
   ["A", "interactive agent session (exits)"],
@@ -80,6 +82,7 @@ export interface AppProps {
   autoRefreshSeconds: number;
   onCheckout: (pr: ClassifiedPR) => void;
   onHandoff: (pr: ClassifiedPR, agent: Agent) => void;
+  onFix: (pr: ClassifiedPR, agent: Agent, feedback: Feedback) => void;
 }
 
 interface Confirm {
@@ -165,6 +168,7 @@ export function App({
   autoRefreshSeconds,
   onCheckout,
   onHandoff,
+  onFix,
 }: AppProps) {
   const { exit } = useApp();
   const { columns, rows: termRows } = useTerminalSize();
@@ -187,11 +191,21 @@ export function App({
   const [approving, setApproving] = React.useState<ReadonlySet<string>>(() => new Set());
   const [details, setDetails] = React.useState<DetailsState | null>(null);
   const detailsAbort = React.useRef<AbortController | null>(null);
+  const fixingRef = React.useRef<{ prRef: string; controller: AbortController } | null>(null);
+  const [fixing, setFixing] = React.useState<string | null>(null);
 
   const now = useNow(reviews.activeCount > 0);
-  const spinner = useSpinner(reviews.activeCount > 0 || queue.refreshing || approving.size > 0 || Boolean(details?.body.loading));
+  const spinner = useSpinner(
+    reviews.activeCount > 0 || queue.refreshing || approving.size > 0 || Boolean(details?.body.loading) || fixing !== null,
+  );
 
-  React.useEffect(() => () => detailsAbort.current?.abort(), []);
+  React.useEffect(
+    () => () => {
+      detailsAbort.current?.abort();
+      fixingRef.current?.controller.abort();
+    },
+    [],
+  );
 
   const [collapsed, setCollapsed] = React.useState<ReadonlySet<BucketId>>(
     () => new Set(collapseWaitingByDefault ? WAITING_BUCKETS : []),
@@ -296,10 +310,10 @@ export function App({
     if (review.confirmBeforePosting) setConfirm(yesNo(prompt, onYes));
     else onYes();
   };
-  const runningGuard = (what: string) =>
-    reviews.activeCount > 0
-      ? `${reviews.activeCount} review${reviews.activeCount === 1 ? "" : "s"} running; ${what}`
-      : null;
+  const runningGuard = (what: string) => {
+    const active = [...jobsRef.current.values()].filter((j) => j.status === "queued" || j.status === "running").length;
+    return active > 0 ? `${active} review${active === 1 ? "" : "s"} running; ${what}` : null;
+  };
   const withAgent = (fn: (agent: Agent) => void) => {
     if (activeAgent) fn(activeAgent);
     else error(`No review agent found (install ${AGENT_IDS.join(", ")})`);
@@ -392,6 +406,39 @@ export function App({
     );
   };
 
+  const fixFeedback = (pr: ClassifiedPR) =>
+    withAgent((agent) => {
+      if (fixingRef.current) return info(`Already loading comments for ${fixingRef.current.prRef}`);
+      const viewer = queue.result?.viewer;
+      if (!viewer) return info("Wait for the queue to load");
+      const guard = runningGuard("wait or cancel them (x) first");
+      if (guard) return info(guard);
+      const blocker = actions.checkoutBlocker(pr);
+      if (blocker) return error(blocker);
+      const controller = new AbortController();
+      const prRef = ref(pr);
+      fixingRef.current = { prRef, controller };
+      setFixing(prRef);
+      info(`Loading comments on ${prRef} since the last commit…`);
+      actions
+        .loadFeedback(pr, viewer, controller.signal)
+        .then((feedback) => {
+          if (controller.signal.aborted) return;
+          const lateGuard = runningGuard("wait or cancel them (x) first");
+          if (lateGuard) return info(lateGuard);
+          if (feedbackCount(feedback) === 0) return info(`No new comments on ${prRef} since ${feedback.since.oid.slice(0, 7)}`);
+          onFix(pr, agent, feedback);
+          exit();
+        })
+        .catch((err: Error) => {
+          if (!controller.signal.aborted) error(firstLine(err.message));
+        })
+        .finally(() => {
+          if (fixingRef.current?.controller === controller) fixingRef.current = null;
+          setFixing(null);
+        });
+    });
+
   const discardReview = (pr: ClassifiedPR) => {
     const job = reviews.jobs.get(pr.id);
     if (!job) return info("Nothing to cancel or discard");
@@ -473,6 +520,7 @@ export function App({
       if (input === "v") return approveReview(detailsPR);
       if (input === "a") return startReview(detailsPR);
       if (input === "x") return discardReview(detailsPR);
+      if (input === "f") return fixFeedback(detailsPR);
       if (input === "m" && canSwitchAgent) {
         const next = (agentIndex + 1) % agents.length;
         setAgentIndex(next);
@@ -493,6 +541,7 @@ export function App({
         setQuitArmed(true);
         return info(guard);
       }
+      fixingRef.current?.controller.abort();
       reviews.abortAll();
       return exit();
     }
@@ -533,16 +582,19 @@ export function App({
         if (guard) return info(guard);
         const blocker = actions.checkoutBlocker(pr);
         if (blocker) return error(blocker);
+        fixingRef.current?.controller.abort();
         onCheckout(pr);
         exit();
       });
     }
     if (input === "a") return withPR(startReview);
+    if (input === "f") return withPR(fixFeedback);
     if (input === "A") {
       return withPR((pr) =>
         withAgent((agent) => {
           const guard = runningGuard("wait or cancel them (x) first");
           if (guard) return info(guard);
+          fixingRef.current?.controller.abort();
           onHandoff(pr, agent);
           exit();
         }),
@@ -581,6 +633,7 @@ export function App({
     canSwitchAgent ? h(Text, { color: "magenta" }, `  ⇄ ${activeAgent!.id}`) : null,
     filterActive ? h(Text, { color: "cyan" }, `  filter "${filter.trim()}" · ${matchCount} match${matchCount === 1 ? "" : "es"}`) : null,
     queue.refreshing ? h(Text, { color: "yellow" }, `  ${spinner} refreshing…`) : null,
+    fixing ? h(Text, { color: "yellow" }, `  ${spinner} loading comments…`) : null,
   );
 
   const banners = [

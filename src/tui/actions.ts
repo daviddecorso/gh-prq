@@ -3,6 +3,7 @@ import { firstErrorLine, run } from "../core/exec.ts";
 import { stripControlChars } from "../core/format.ts";
 import { remoteForRepo } from "../core/git.ts";
 import type { Agent } from "../core/review/agents.ts";
+import type { Feedback } from "../core/review/feedback.ts";
 import { approvePR } from "../core/review/post.ts";
 import type { ReviewDraft } from "../core/review/schema.ts";
 import type { ClassifiedPR } from "../core/types.ts";
@@ -23,6 +24,8 @@ export interface Actions {
   loadDetails(pr: ClassifiedPR, opts?: LoadDetailsOptions): Promise<string>;
   /** `null` means the PR can be checked out from the current directory. */
   checkoutBlocker(pr: ClassifiedPR): string | null;
+  /** Comments posted since the PR's head commit, for `f`. */
+  loadFeedback(pr: ClassifiedPR, viewer: string, signal?: AbortSignal): Promise<Feedback>;
   bell(): void;
 }
 
@@ -89,7 +92,8 @@ function spawnDetached(cmd: string, args: string[]) {
   child.unref();
 }
 
-export const defaultActions: Actions = {
+/** `loadFeedback` needs the config's bot filters, so `runTui` supplies it. */
+export const defaultActions: Omit<Actions, "loadFeedback"> = {
   open(pr) {
     spawnDetached("gh", ["pr", "view", pr.url, "--web"]);
     return `Opened ${ref(pr)}`;

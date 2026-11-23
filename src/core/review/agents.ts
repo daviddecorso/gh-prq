@@ -25,7 +25,11 @@ export interface Agent {
   /** `read` turns the finished process into the raw draft for `parseDraft`, throwing on failure. */
   headless(run: AgentRun): { args: string[]; read(res: RunResult): unknown };
   interactive(run: AgentRun): string[];
+  /** Interactive with the CLI's normal write permissions, run in the user's checkout. */
+  fix(run: FixRun): string[];
 }
+
+export type FixRun = Pick<AgentRun, "prompt" | "systemPrompt" | "model">;
 
 export const ALLOWED_TOOLS = [
   "Read",
@@ -40,7 +44,7 @@ export const ALLOWED_TOOLS = [
 export const DISALLOWED_TOOLS = ["Edit", "Write", "NotebookEdit"];
 
 const modelArgs = (model: string | undefined, flag = "--model") => (model ? [flag, model] : []);
-const withSystemPrompt = ({ prompt, systemPrompt }: AgentRun) => `${systemPrompt}\n\n${prompt}`;
+const withSystemPrompt = ({ prompt, systemPrompt }: FixRun) => `${systemPrompt}\n\n${prompt}`;
 
 /** The tool flags are variadic, so callers put positionals first. */
 function claudeArgs({ systemPrompt, model, ws }: AgentRun): string[] {
@@ -76,6 +80,7 @@ const claude: Agent = {
     },
   }),
   interactive: (run) => [run.prompt, ...claudeArgs(run)],
+  fix: (run) => [run.prompt, ...modelArgs(run.model), "--append-system-prompt", run.systemPrompt],
 };
 
 /** Pulls a JSON object out of a model reply that may wrap it in a code fence or prose. */
@@ -115,6 +120,7 @@ const gemini: Agent = {
     },
   }),
   interactive: (run) => ["--include-directories", run.ws.contextDir, ...modelArgs(run.model), "-i", withSystemPrompt(run)],
+  fix: (run) => [...modelArgs(run.model), "-i", withSystemPrompt(run)],
 };
 
 const codex: Agent = {
@@ -157,6 +163,7 @@ const codex: Agent = {
     };
   },
   interactive: (run) => ["--sandbox", "read-only", ...modelArgs(run.model), withSystemPrompt(run)],
+  fix: (run) => [...modelArgs(run.model), withSystemPrompt(run)],
 };
 
 export const AGENTS: Record<AgentId, Agent> = { claude, gemini, codex };

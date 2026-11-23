@@ -5,6 +5,7 @@ import React from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { ClassifiedPR, QueueResult } from "../src/core/types.ts";
 import { AGENTS, type Agent } from "../src/core/review/agents.ts";
+import type { Feedback } from "../src/core/review/feedback.ts";
 import type { ReviewDraft } from "../src/core/review/schema.ts";
 import type { Actions } from "../src/tui/actions.ts";
 import { App, AUTO_DETAIL_MIN_COLUMNS } from "../src/tui/App.ts";
@@ -14,6 +15,8 @@ import type { Reviewer } from "../src/tui/useReviews.ts";
 import { item, result } from "./fixtures.ts";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+const NO_FEEDBACK: Feedback = { since: { oid: "abc1234567", at: "2026-01-01T00:00:00Z" }, threads: [], reviews: [], comments: [] };
 
 const DRAFT: ReviewDraft = {
   summary: "Looks close. One race in the refresh path.",
@@ -38,6 +41,7 @@ function setup(
     approve: vi.fn(async (pr: ClassifiedPR) => `Approved ${pr.id}`),
     checkoutBlocker: vi.fn(() => null),
     loadDetails: vi.fn(async (pr: ClassifiedPR) => `PR body for ${pr.id}`),
+    loadFeedback: vi.fn(async () => NO_FEEDBACK),
     bell: vi.fn(),
     ...actionOverrides,
   };
@@ -51,6 +55,7 @@ function setup(
   };
   const onCheckout = vi.fn();
   const onHandoff = vi.fn();
+  const onFix = vi.fn();
   const app = render(
     React.createElement(App, {
       load,
@@ -64,9 +69,10 @@ function setup(
       autoRefreshSeconds: 0,
       onCheckout,
       onHandoff,
+      onFix,
     }),
   );
-  return { ...app, actions, reviewer, onCheckout, onHandoff };
+  return { ...app, actions, reviewer, onCheckout, onHandoff, onFix };
 }
 
 async function press(app: { stdin: { write(s: string): void } }, ...keys: string[]) {
@@ -194,6 +200,86 @@ describe("App", () => {
     app.stdin.write("c");
     await tick();
     expect(app.onCheckout).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }));
+  });
+
+  test("f with no new comments stays in the TUI", async () => {
+    const app = setup(async () => queue);
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "f");
+    expect(app.actions.loadFeedback).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }), "me", expect.any(AbortSignal));
+    expect(app.lastFrame()).toContain("No new comments");
+    expect(app.onFix).not.toHaveBeenCalled();
+  });
+
+  test("f with new comments hands the PR, agent, and feedback back", async () => {
+    const feedback: Feedback = { ...NO_FEEDBACK, comments: [{ author: "alice", body: "Rename this", createdAt: "2026-01-02T00:00:00Z" }] };
+    const app = setup(async () => queue, { loadFeedback: vi.fn(async () => feedback) });
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "f");
+    expect(app.onFix).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }), AGENTS.claude, feedback);
+  });
+
+  test("f from the wrong repo shows why without loading comments", async () => {
+    const app = setup(async () => queue, { checkoutBlocker: () => "cd into acme/api to check out #1" });
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "f");
+    expect(app.lastFrame()).toContain("cd into acme/api");
+    expect(app.actions.loadFeedback).not.toHaveBeenCalled();
+  });
+
+  test("f while loading shows a spinner, ignores a second press, and aborts on checkout", async () => {
+    let resolveFeedback!: (f: Feedback) => void;
+    let signal!: AbortSignal;
+    const loadFeedback = vi.fn(
+      (_pr: ClassifiedPR, _viewer: string, s?: AbortSignal) =>
+        new Promise<Feedback>((resolve) => {
+          signal = s!;
+          resolveFeedback = resolve;
+        }),
+    );
+    const app = setup(async () => queue, { loadFeedback });
+    cleanup = app.unmount;
+    await tick();
+    app.stdin.write("f");
+    app.stdin.write("f");
+    await tick();
+    expect(loadFeedback).toHaveBeenCalledTimes(1);
+    expect(app.lastFrame()).toContain("loading comments…");
+    await press(app, "c");
+    expect(signal.aborted).toBe(true);
+    expect(app.onCheckout).toHaveBeenCalledTimes(1);
+    resolveFeedback({ ...NO_FEEDBACK, comments: [{ author: "alice", body: "fix", createdAt: "2026-01-02T00:00:00Z" }] });
+    await tick();
+    expect(app.onFix).not.toHaveBeenCalled();
+  });
+
+  test("f doesn't exit or abort if a review starts while comments are loading", async () => {
+    let resolveFeedback!: (f: Feedback) => void;
+    const loadFeedback = vi.fn(() => new Promise<Feedback>((resolve) => (resolveFeedback = resolve)));
+    let reviewSignal!: AbortSignal;
+    const app = setup(
+      async () => queue,
+      { loadFeedback },
+      null,
+      {
+        run: vi.fn((_pr: ClassifiedPR, _agent: Agent, s: AbortSignal) => {
+          reviewSignal = s;
+          return new Promise<ReviewDraft>(() => {});
+        }),
+      },
+    );
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "f");
+    await press(app, "a");
+    resolveFeedback({ ...NO_FEEDBACK, comments: [{ author: "alice", body: "fix", createdAt: "2026-01-02T00:00:00Z" }] });
+    await tick();
+    expect(app.onFix).not.toHaveBeenCalled();
+    expect(reviewSignal.aborted).toBe(false);
+    expect(app.lastFrame()).toContain("1 review running");
   });
 
   test("v then y approves and refreshes; v then n doesn't", async () => {
@@ -782,12 +868,12 @@ describe("agent reviews", () => {
     let frame = app.lastFrame()!;
     expect(frame).toContain("move (or scroll in details)");
     expect(frame).toContain("half page / full page");
-    expect(frame).toContain("↓ 1 more · j/k scroll · any other key to close");
+    expect(frame).toContain("↓ 2 more · j/k scroll · any other key to close");
     expect(frame.split("\n").length).toBeLessThanOrEqual(24);
-    await press(app, "j");
+    await press(app, "j", "j");
     frame = app.lastFrame()!;
     expect(frame).toContain("cancel review or discard draft");
-    expect(frame).toContain("↑ 1 · j/k scroll · any other key to close");
+    expect(frame).toContain("↑ 2 · j/k scroll · any other key to close");
     await press(app, "q");
     expect(app.lastFrame()).toContain("▾ NEEDS RE-REVIEW (1)");
   });
@@ -825,6 +911,7 @@ describe("agent reviews", () => {
             approve: vi.fn(async () => ""),
             checkoutBlocker: vi.fn(() => null),
             loadDetails: vi.fn(async () => ""),
+            loadFeedback: vi.fn(async () => NO_FEEDBACK),
             bell: vi.fn(),
           },
           reviewer: {
@@ -841,6 +928,7 @@ describe("agent reviews", () => {
           autoRefreshSeconds: 0,
           onCheckout: vi.fn(),
           onHandoff: vi.fn(),
+          onFix: vi.fn(),
         }),
         { stdout, stdin, patchConsole: false, debug: true },
       );

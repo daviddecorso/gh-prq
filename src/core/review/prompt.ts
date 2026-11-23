@@ -1,4 +1,5 @@
 import type { ClassifiedPR } from "../types.ts";
+import type { Feedback } from "./feedback.ts";
 import { REVIEW_DRAFT_SCHEMA } from "./schema.ts";
 import type { Workspace } from "./workspace.ts";
 
@@ -11,8 +12,8 @@ One issue per inline comment: the problem, then the fix. Skip style nits a linte
 
 const MAX_QUOTED_COMMENT = 600;
 
-function quote(body: string): string {
-  const text = body.length > MAX_QUOTED_COMMENT ? `${body.slice(0, MAX_QUOTED_COMMENT)}…` : body;
+function quote(body: string, maxChars: number | null = MAX_QUOTED_COMMENT): string {
+  const text = maxChars != null && body.length > maxChars ? `${body.slice(0, maxChars)}…` : body;
   return text.replace(/\r?\n/g, "\n     ");
 }
 
@@ -76,4 +77,33 @@ export function buildReviewPrompt(
   }
 
   return { prompt: lines.join("\n"), appendSystemPrompt: SYSTEM_PROMPT };
+}
+
+const FIX_SYSTEM_PROMPT = `You're helping the user address review feedback on their pull request.
+Don't commit, push, or post anything to GitHub unless the user asks.`;
+
+export function buildFixPrompt(pr: ClassifiedPR, feedback: Feedback): { prompt: string; appendSystemPrompt: string } {
+  const lines = [
+    `The working directory is checked out on the branch for ${pr.repo}#${pr.number} "${pr.title}" (${pr.url}).`,
+    `Address the feedback below, posted since the last commit ${feedback.since.oid.slice(0, 7)} (${feedback.since.at}).`,
+    "For each item, make the fix or tell me why you wouldn't. Read the surrounding code first; outdated threads may point at lines that moved.",
+  ];
+  let n = 0;
+  if (feedback.threads.length) {
+    lines.push("", "Inline review threads:");
+    for (const t of feedback.threads) {
+      lines.push(`${++n}. ${t.path}${t.line != null ? `:${t.line}` : ""}${t.isOutdated ? " (outdated)" : ""}`);
+      for (const c of t.comments) lines.push(`   @${c.author}${c.isNew ? " (new)" : ""}: ${quote(c.body, null)}`);
+    }
+  }
+  if (feedback.reviews.length) {
+    lines.push("", "Review summaries:");
+    for (const r of feedback.reviews) lines.push(`${++n}. @${r.author} (${r.state.toLowerCase().replace("_", " ")}): ${quote(r.body, null)}`);
+  }
+  if (feedback.comments.length) {
+    lines.push("", "Discussion comments:");
+    for (const c of feedback.comments) lines.push(`${++n}. @${c.author}: ${quote(c.body, null)}`);
+  }
+  lines.push("", "Start by listing what you plan to change for each item, then make the changes.");
+  return { prompt: lines.join("\n"), appendSystemPrompt: FIX_SYSTEM_PROMPT };
 }
