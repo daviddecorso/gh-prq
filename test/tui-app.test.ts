@@ -3,12 +3,12 @@ import { render as inkRender } from "ink";
 import { render } from "ink-testing-library";
 import React from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import type { ClassifiedPR, QueueResult } from "../src/core/types.ts";
 import { AGENTS, type Agent } from "../src/core/review/agents.ts";
 import type { Feedback } from "../src/core/review/feedback.ts";
 import type { ReviewDraft } from "../src/core/review/schema.ts";
-import type { Actions } from "../src/tui/actions.ts";
+import type { ClassifiedPR, QueueResult } from "../src/core/types.ts";
 import { App, AUTO_DETAIL_MIN_COLUMNS } from "../src/tui/App.ts";
+import type { Actions } from "../src/tui/actions.ts";
 import { DetailPane } from "../src/tui/DetailPane.ts";
 import type { Row } from "../src/tui/model.ts";
 import type { Reviewer } from "../src/tui/useReviews.ts";
@@ -84,11 +84,7 @@ async function press(app: { stdin: { write(s: string): void } }, ...keys: string
   }
 }
 
-const queue = result([
-  item("PR1", "NEEDS_REREVIEW"),
-  item("PR2", "NEEDS_INITIAL_REVIEW"),
-  item("PR3", "WAITING_ON_AUTHOR"),
-]);
+const queue = result([item("PR1", "NEEDS_REREVIEW"), item("PR2", "NEEDS_INITIAL_REVIEW"), item("PR3", "WAITING_ON_AUTHOR")]);
 
 let cleanup: (() => void) | undefined;
 afterEach(() => cleanup?.());
@@ -282,17 +278,12 @@ describe("App", () => {
     let resolveFeedback!: (f: Feedback) => void;
     const loadFeedback = vi.fn(() => new Promise<Feedback>((resolve) => (resolveFeedback = resolve)));
     let reviewSignal!: AbortSignal;
-    const app = setup(
-      async () => queue,
-      { loadFeedback },
-      null,
-      {
-        run: vi.fn((_pr: ClassifiedPR, _agent: Agent, s: AbortSignal) => {
-          reviewSignal = s;
-          return new Promise<ReviewDraft>(() => {});
-        }),
-      },
-    );
+    const app = setup(async () => queue, { loadFeedback }, null, {
+      run: vi.fn((_pr: ClassifiedPR, _agent: Agent, s: AbortSignal) => {
+        reviewSignal = s;
+        return new Promise<ReviewDraft>(() => {});
+      }),
+    });
     cleanup = app.unmount;
     await tick();
     await press(app, "f");
@@ -487,7 +478,11 @@ describe("agent reviews", () => {
   });
 
   test("d shows full details and surfaces failures", async () => {
-    const app = setup(async () => queue, { loadDetails: vi.fn(async () => { throw new Error("no pull requests found"); }) });
+    const app = setup(async () => queue, {
+      loadDetails: vi.fn(async () => {
+        throw new Error("no pull requests found");
+      }),
+    });
     cleanup = app.unmount;
     await tick();
     await press(app, "d");
@@ -499,7 +494,11 @@ describe("agent reviews", () => {
     const saved = { prId: "PR1", headOid: "c1", createdAt: "", draft: DRAFT };
     const app = setup(
       async () => queue,
-      { loadDetails: vi.fn(async () => { throw new Error("offline"); }) },
+      {
+        loadDetails: vi.fn(async () => {
+          throw new Error("offline");
+        }),
+      },
       null,
       { loadDrafts: () => [saved] },
     );
@@ -729,12 +728,9 @@ describe("agent reviews", () => {
   test("details stays open when a draft finishes before loadDetails fails", async () => {
     let finishRun!: (d: ReviewDraft) => void;
     let failDetails!: (err: Error) => void;
-    const app = setup(
-      async () => queue,
-      { loadDetails: vi.fn(() => new Promise<string>((_, rej) => (failDetails = rej))) },
-      null,
-      { run: vi.fn(() => new Promise<ReviewDraft>((r) => (finishRun = r))) },
-    );
+    const app = setup(async () => queue, { loadDetails: vi.fn(() => new Promise<string>((_, rej) => (failDetails = rej))) }, null, {
+      run: vi.fn(() => new Promise<ReviewDraft>((r) => (finishRun = r))),
+    });
     cleanup = app.unmount;
     await tick();
     await press(app, "a", "d");

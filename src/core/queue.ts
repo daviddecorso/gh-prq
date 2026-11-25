@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readCache, writeCache } from "./cache.ts";
 import { classifyPR } from "./classifier.ts";
 import type { Config } from "./config.ts";
-import { fetchSnapshot, getGhToken, GhAuthError, type Scope } from "./github.ts";
+import { fetchSnapshot, GhAuthError, getGhToken, type Scope } from "./github.ts";
 import { BUCKET_ORDER, type ClassifiedPR, type QueueResult, type QueueSnapshot } from "./types.ts";
 
 export interface LoadQueueOptions extends Scope {
@@ -22,17 +22,16 @@ function compareItems(a: ClassifiedPR, b: ClassifiedPR): number {
 /** Case-insensitive globs; a pattern without `/` matches the repo name under any owner. */
 export function repoMatcher(patterns: string[]): (repo: string) => boolean {
   const regexes = patterns.map((pattern) => {
-    const source = pattern.split("*").map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*");
+    const source = pattern
+      .split("*")
+      .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
+      .join(".*");
     return { regex: new RegExp(`^${source}$`, "i"), wholeRepo: pattern.includes("/") };
   });
-  return (repo) => regexes.some(({ regex, wholeRepo }) => regex.test(wholeRepo ? repo : repo.split("/")[1] ?? repo));
+  return (repo) => regexes.some(({ regex, wholeRepo }) => regex.test(wholeRepo ? repo : (repo.split("/")[1] ?? repo)));
 }
 
-export function classifySnapshot(
-  snapshot: QueueSnapshot,
-  config: Config,
-  includeApproved = false,
-): ClassifiedPR[] {
+export function classifySnapshot(snapshot: QueueSnapshot, config: Config, includeApproved = false): ClassifiedPR[] {
   const isExcluded = repoMatcher(config.filters.excludeRepos);
   return snapshot.prs
     .filter((pr) => !isExcluded(pr.repo))

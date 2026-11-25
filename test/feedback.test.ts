@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 import { DEFAULT_CONFIG } from "../src/core/config.ts";
 import { AGENTS } from "../src/core/review/agents.ts";
-import { loadFeedback, selectFeedback, type RawFeedback } from "../src/core/review/feedback.ts";
+import { loadFeedback, type RawFeedback, selectFeedback } from "../src/core/review/feedback.ts";
 import { buildFixPrompt } from "../src/core/review/prompt.ts";
 import { item } from "./fixtures.ts";
 
@@ -69,7 +69,11 @@ describe("selectFeedback", () => {
       raw({
         reviewThreads: {
           nodes: [
-            thread(false, [["alice", before], ["me", before], ["alice", after]]),
+            thread(false, [
+              ["alice", before],
+              ["me", before],
+              ["alice", after],
+            ]),
             thread(true, [["bob", after]]),
             thread(false, [["bob", before]]),
             thread(false, [["me", after]]),

@@ -33,9 +33,7 @@ export function resolveCurrentRepo(): string {
 }
 
 export function buildSearchQueries(scope: Scope) {
-  const suffix = [scope.repo && `repo:${scope.repo}`, scope.org && `org:${scope.org}`]
-    .filter(Boolean)
-    .join(" ");
+  const suffix = [scope.repo && `repo:${scope.repo}`, scope.org && `org:${scope.org}`].filter(Boolean).join(" ");
   const q = (base: string) => (suffix ? `${base} ${suffix}` : base);
   return {
     qAuthored: q("is:open is:pr author:@me"),
@@ -139,9 +137,7 @@ interface RawComment {
   createdAt: string;
 }
 
-type RawCheckContext =
-  | { name: string; conclusion: string | null; status: string }
-  | { context: string; state: string };
+type RawCheckContext = { name: string; conclusion: string | null; status: string } | { context: string; state: string };
 
 interface RawPR {
   id: string;

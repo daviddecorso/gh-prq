@@ -1,13 +1,13 @@
+import { BUCKET_TONE, CI_STYLE, padEndDisplay, relativeTime, truncate } from "../core/format.ts";
 import {
   ACTIONABLE_BUCKETS,
   BUCKET_LABELS,
   BUCKET_ORDER,
-  WAITING_BUCKETS,
-  type ClassifiedPR,
   type CiState,
+  type ClassifiedPR,
   type QueueResult,
+  WAITING_BUCKETS,
 } from "../core/types.ts";
-import { BUCKET_TONE, CI_STYLE, padEndDisplay, relativeTime, truncate } from "../core/format.ts";
 
 const TITLE_WIDTH = 50;
 

@@ -2,7 +2,7 @@ import { Box, Text } from "ink";
 import React from "react";
 import { displayWidth, truncate, wrapAnsiLines } from "../core/format.ts";
 import type { ClassifiedPR } from "../core/types.ts";
-import { formatDraft, type DraftReview } from "./actions.ts";
+import { type DraftReview, formatDraft } from "./actions.ts";
 
 const h = React.createElement;
 

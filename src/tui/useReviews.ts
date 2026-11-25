@@ -43,10 +43,12 @@ export function useReviews(reviewer: Reviewer, maxConcurrent: number, onSettled?
   const [jobs, setJobs] = React.useState<ReadonlyMap<string, ReviewJob>>(
     () =>
       new Map(
-        reviewer.loadDrafts().map((s) => [
-          s.prId,
-          { status: "ready", agent: AGENTS[s.agent ?? "claude"] ?? AGENTS.claude, headOid: s.headOid, draft: s.draft },
-        ]),
+        reviewer
+          .loadDrafts()
+          .map((s) => [
+            s.prId,
+            { status: "ready", agent: AGENTS[s.agent ?? "claude"] ?? AGENTS.claude, headOid: s.headOid, draft: s.draft },
+          ]),
       ),
   );
   const controllers = React.useRef(new Map<string, AbortController>());

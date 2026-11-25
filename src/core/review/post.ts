@@ -1,4 +1,4 @@
-import { firstErrorLine, run, type Runner } from "../exec.ts";
+import { firstErrorLine, type Runner, run } from "../exec.ts";
 import type { ClassifiedPR } from "../types.ts";
 import type { DraftComment, FollowUpStatus, ReviewDraft } from "./schema.ts";
 

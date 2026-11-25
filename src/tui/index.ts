@@ -6,17 +6,17 @@ import { filterItems } from "../cli/filter.ts";
 import type { Config } from "../core/config.ts";
 import type { Scope } from "../core/github.ts";
 import { loadCachedQueue, loadQueue } from "../core/queue.ts";
+import { type Agent, availableAgents } from "../core/review/agents.ts";
 import { fileDraftStore } from "../core/review/drafts.ts";
-import { availableAgents, type Agent } from "../core/review/agents.ts";
-import { feedbackCount, loadFeedback, type Feedback } from "../core/review/feedback.ts";
+import { type Feedback, feedbackCount, loadFeedback } from "../core/review/feedback.ts";
 import { postDraft } from "../core/review/post.ts";
 import { buildFixPrompt } from "../core/review/prompt.ts";
 import { agentRun, runHeadlessReview, usesClaudeBuiltins } from "../core/review/runner.ts";
 import { prepareWorkspace } from "../core/review/workspace.ts";
 import type { ClassifiedPR, QueueResult } from "../core/types.ts";
+import { App } from "./App.ts";
 import { defaultActions, runCheckout } from "./actions.ts";
 import { runInAltScreen } from "./altScreen.ts";
-import { App } from "./App.ts";
 import type { Reviewer } from "./useReviews.ts";
 
 export interface RunTuiOptions {

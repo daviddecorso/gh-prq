@@ -1,18 +1,18 @@
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import React from "react";
-import { displayWidth, relativeTime } from "../core/format.ts";
-import { ACTIONABLE_BUCKETS, WAITING_BUCKETS, type BucketId, type ClassifiedPR, type QueueResult } from "../core/types.ts";
 import type { Config } from "../core/config.ts";
+import { displayWidth, relativeTime } from "../core/format.ts";
 import { AGENT_IDS, type Agent } from "../core/review/agents.ts";
-import { feedbackCount, type Feedback } from "../core/review/feedback.ts";
+import { type Feedback, feedbackCount } from "../core/review/feedback.ts";
 import { EVENT_FOR_VERDICT, type ReviewEvent } from "../core/review/post.ts";
+import { ACTIONABLE_BUCKETS, type BucketId, type ClassifiedPR, type QueueResult, WAITING_BUCKETS } from "../core/types.ts";
 import type { Actions } from "./actions.ts";
 import { buildDetailLines, DetailPane, maxDetailScroll } from "./DetailPane.ts";
-import { buildDetailsViewLines, DetailsView, type DetailsBody } from "./DetailsView.ts";
+import { buildDetailsViewLines, type DetailsBody, DetailsView } from "./DetailsView.ts";
 import { adjacentHeader, bucketOfRow, buildRows, clampCursor, keyHints, restoreCursor, rowKey, scrollWindow } from "./model.ts";
 import { QueueList } from "./QueueList.ts";
-import { useQueue, type QueueLoader } from "./useQueue.ts";
-import { useReviews, type Reviewer, type ReviewSettled } from "./useReviews.ts";
+import { type QueueLoader, useQueue } from "./useQueue.ts";
+import { type Reviewer, type ReviewSettled, useReviews } from "./useReviews.ts";
 
 const h = React.createElement;
 
@@ -213,9 +213,7 @@ export function App({
     [],
   );
 
-  const [collapsed, setCollapsed] = React.useState<ReadonlySet<BucketId>>(
-    () => new Set(collapseWaitingByDefault ? WAITING_BUCKETS : []),
-  );
+  const [collapsed, setCollapsed] = React.useState<ReadonlySet<BucketId>>(() => new Set(collapseWaitingByDefault ? WAITING_BUCKETS : []));
   const [filter, setFilterText] = React.useState("");
   const [filterEditing, setFilterEditing] = React.useState(false);
   // Selection is tracked by row key so it follows the same PR when a refresh reorders rows.
@@ -257,8 +255,7 @@ export function App({
   const sideDetail = showDetail && !detailsOpen && columns >= SIDE_DETAIL_MIN_COLUMNS;
   const showBottomDetail = showDetail && !detailsOpen && !sideDetail && Boolean(queue.result) && !showHelp;
   const warnings = queue.result?.warnings ?? [];
-  const bannerLines =
-    (queue.result?.staleReason ? 1 : 0) + Math.min(warnings.length, MAX_WARNINGS + 1) + (queue.error ? 1 : 0);
+  const bannerLines = (queue.result?.staleReason ? 1 : 0) + Math.min(warnings.length, MAX_WARNINGS + 1) + (queue.error ? 1 : 0);
   const confirmExtraLines = confirm ? Math.max(0, Math.ceil(displayWidth(confirm.prompt) / Math.max(1, columns)) - 1) : 0;
   const listHeight = Math.max(
     3,
@@ -272,14 +269,10 @@ export function App({
   React.useEffect(() => setScrollStart(start), [start]);
 
   const detailMaxScroll =
-    showDetail && !detailsOpen
-      ? maxDetailScroll(buildDetailLines(current, detailWidth, now, currentJob, spinner).length, detailHeight)
-      : 0;
+    showDetail && !detailsOpen ? maxDetailScroll(buildDetailLines(current, detailWidth, now, currentJob, spinner).length, detailHeight) : 0;
   const detailsContentWidth = Math.max(20, columns - 2);
   const detailsDraft =
-    detailsJob?.status === "ready" || detailsJob?.status === "posting"
-      ? { draft: detailsJob.draft, agent: detailsJob.agent }
-      : null;
+    detailsJob?.status === "ready" || detailsJob?.status === "posting" ? { draft: detailsJob.draft, agent: detailsJob.agent } : null;
   const detailsBody = details?.body;
   // biome-ignore lint/correctness/useExhaustiveDependencies: detailsDraft is a fresh object each render; its fields are the real inputs.
   const detailsStaticLines = React.useMemo(
@@ -294,9 +287,7 @@ export function App({
   const actionHelp = ACTION_HELP_LINES.filter(([keys]) => (keys !== "m" || canSwitchAgent) && (keys !== "S" || canSteward));
   const twoColHelp = columns >= TWO_COL_HELP_MIN_COLUMNS;
   const helpVisibleHeight = Math.max(1, listHeight - 1);
-  const helpRowCount = twoColHelp
-    ? 1 + Math.max(NAV_HELP_LINES.length, actionHelp.length)
-    : NAV_HELP_LINES.length + actionHelp.length;
+  const helpRowCount = twoColHelp ? 1 + Math.max(NAV_HELP_LINES.length, actionHelp.length) : NAV_HELP_LINES.length + actionHelp.length;
   const helpMaxScroll = Math.max(0, helpRowCount - helpVisibleHeight);
 
   const toggleFold = () => {
@@ -361,7 +352,9 @@ export function App({
     withAgent((agent) => {
       const job = reviews.jobs.get(pr.id);
       if (job?.status === "ready" && job.headOid !== pr.headOid) {
-        setConfirm(yesNo(`Draft is stale — re-run ${agent.label} on ${ref(pr)}? y/n`, () => info(reviews.start(pr, agent, { replace: true }))));
+        setConfirm(
+          yesNo(`Draft is stale — re-run ${agent.label} on ${ref(pr)}? y/n`, () => info(reviews.start(pr, agent, { replace: true }))),
+        );
       } else {
         info(reviews.start(pr, agent));
       }
@@ -651,11 +644,7 @@ export function App({
     h(Text, { bold: true }, "gh-prq"),
     "  ",
     result
-      ? h(
-          Text,
-          { dimColor: true },
-          `${actionable} actionable · ${waiting} waiting · updated ${relativeTime(result.fetchedAt, now)} ago`,
-        )
+      ? h(Text, { dimColor: true }, `${actionable} actionable · ${waiting} waiting · updated ${relativeTime(result.fetchedAt, now)} ago`)
       : null,
     reviews.activeCount > 0 ? h(Text, { color: "magenta" }, `  ${spinner} ${reviews.activeCount} reviewing`) : null,
     readyCount > 0 ? h(Text, { color: "magenta" }, `  ✎ ${readyCount} draft${readyCount === 1 ? "" : "s"}`) : null,
@@ -666,7 +655,9 @@ export function App({
   );
 
   const banners = [
-    result?.staleReason ? h(Text, { key: "stale", color: "yellow", wrap: "truncate-end" }, `⚠ Offline / stale cache: ${firstLine(result.staleReason)}`) : null,
+    result?.staleReason
+      ? h(Text, { key: "stale", color: "yellow", wrap: "truncate-end" }, `⚠ Offline / stale cache: ${firstLine(result.staleReason)}`)
+      : null,
     ...warnings
       .slice(0, MAX_WARNINGS)
       .map((w, i) => h(Text, { key: `warn-${i}`, color: "yellow", wrap: "truncate-end" }, `⚠ ${firstLine(w)}`)),
@@ -779,17 +770,18 @@ export function App({
   let footer: React.ReactNode;
   if (confirm) footer = h(Text, { color: "yellow", wrap: "wrap" }, confirm.prompt);
   else if (filterEditing) {
-    footer = h(Text, { wrap: "truncate-end" }, h(Text, { color: "cyan" }, `/${filter}▏`), h(Text, { dimColor: true }, "  enter keep · esc clear · ctrl-u/w delete"));
+    footer = h(
+      Text,
+      { wrap: "truncate-end" },
+      h(Text, { color: "cyan" }, `/${filter}▏`),
+      h(Text, { dimColor: true }, "  enter keep · esc clear · ctrl-u/w delete"),
+    );
   } else if (status) {
     footer = h(Text, { color: status.tone === "error" ? "red" : "cyan", wrap: "truncate-end" }, status.text);
   } else {
     const hintRow = detailsOpen && detailsPR ? ({ kind: "pr", pr: detailsPR } as const) : current;
     const hintJob = detailsOpen ? detailsJob : currentJob;
-    footer = h(
-      Text,
-      { dimColor: true, wrap: "truncate-end" },
-      keyHints(hintRow, hintJob, filterActive, { showDetail, detailsOpen }),
-    );
+    footer = h(Text, { dimColor: true, wrap: "truncate-end" }, keyHints(hintRow, hintJob, filterActive, { showDetail, detailsOpen }));
   }
 
   return h(

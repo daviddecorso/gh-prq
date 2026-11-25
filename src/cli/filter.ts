@@ -7,12 +7,7 @@ export interface FilterFlags {
   all?: boolean;
 }
 
-const REVIEWER_BUCKETS: ReadonlySet<BucketId> = new Set([
-  "NEEDS_REREVIEW",
-  "NEEDS_INITIAL_REVIEW",
-  "WAITING_ON_AUTHOR",
-  "DRAFTS",
-]);
+const REVIEWER_BUCKETS: ReadonlySet<BucketId> = new Set(["NEEDS_REREVIEW", "NEEDS_INITIAL_REVIEW", "WAITING_ON_AUTHOR", "DRAFTS"]);
 
 export function filterItems(result: QueueResult, flags: FilterFlags, config: Config): ClassifiedPR[] {
   const isMine = (pr: ClassifiedPR) => pr.author === result.viewer;

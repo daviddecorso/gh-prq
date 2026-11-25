@@ -3,9 +3,9 @@ import React from "react";
 import { AGENTS } from "../src/core/review/agents.ts";
 import type { SavedDraft } from "../src/core/review/drafts.ts";
 import type { BucketId, ClassifiedPR, QueueResult } from "../src/core/types.ts";
+import { App } from "../src/tui/App.ts";
 import type { Actions } from "../src/tui/actions.ts";
 import { runInAltScreen } from "../src/tui/altScreen.ts";
-import { App } from "../src/tui/App.ts";
 
 const now = Date.now();
 const ago = (minutes: number) => new Date(now - minutes * 60_000).toISOString();
@@ -129,7 +129,8 @@ const drafts: SavedDraft[] = [
     createdAt: ago(3),
     agent: "claude",
     draft: {
-      summary: "The retry budget fix looks right. One edge case left: suspended installations still enqueue a retry before the budget check.",
+      summary:
+        "The retry budget fix looks right. One edge case left: suspended installations still enqueue a retry before the budget check.",
       comments: [
         {
           path: "src/webhooks/retry.ts",

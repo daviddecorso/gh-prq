@@ -172,9 +172,7 @@ export const AGENTS: Record<AgentId, Agent> = { claude, gemini, codex };
 
 export function onPath(bin: string): boolean {
   const exts = process.platform === "win32" ? (process.env.PATHEXT ?? ".EXE;.CMD").split(";") : [""];
-  return (process.env.PATH ?? "")
-    .split(delimiter)
-    .some((dir) => dir && exts.some((ext) => existsSync(join(dir, bin + ext))));
+  return (process.env.PATH ?? "").split(delimiter).some((dir) => dir && exts.some((ext) => existsSync(join(dir, bin + ext))));
 }
 
 /** Installed agents in registry order, with `preferred` first when it's installed. */

@@ -58,7 +58,11 @@ function reviewLines(job: ReviewJob | undefined, pr: ClassifiedPR, now: number, 
       Text,
       { key: "rev-hdr", wrap: "truncate-end" },
       title,
-      h(Text, { dimColor: true }, ` · ${job.agent.id} · ${draft.comments.length} inline · suggests ${draft.suggestedVerdict.replace("_", " ")} · p post · x discard`),
+      h(
+        Text,
+        { dimColor: true },
+        ` · ${job.agent.id} · ${draft.comments.length} inline · suggests ${draft.suggestedVerdict.replace("_", " ")} · p post · x discard`,
+      ),
     ),
     ...stripControlChars(draft.summary)
       .split("\n")
@@ -198,13 +202,7 @@ export function DetailPane({ row, width, height, now, job, scroll = 0, spinner =
 
   const below = Math.max(0, lines.length - (offset + visibleCount));
   const scrollHint = overflows
-    ? [
-        offset > 0 ? `↑ ${offset}` : null,
-        below > 0 ? `↓ ${below} more` : null,
-        "J/K scroll · d full",
-      ]
-        .filter(Boolean)
-        .join(" · ")
+    ? [offset > 0 ? `↑ ${offset}` : null, below > 0 ? `↓ ${below} more` : null, "J/K scroll · d full"].filter(Boolean).join(" · ")
     : null;
 
   return h(

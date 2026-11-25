@@ -1,8 +1,8 @@
 import { Box, Text } from "ink";
 import React from "react";
-import { BUCKET_TONE, CI_STYLE, padEndDisplay, relativeTime, truncate, type Tone } from "../core/format.ts";
+import { BUCKET_TONE, CI_STYLE, padEndDisplay, relativeTime, type Tone, truncate } from "../core/format.ts";
 import { BUCKET_LABELS, type ClassifiedPR } from "../core/types.ts";
-import { rowKey, type Row } from "./model.ts";
+import { type Row, rowKey } from "./model.ts";
 import type { ReviewJob } from "./useReviews.ts";
 
 const h = React.createElement;
@@ -57,18 +57,7 @@ export function reviewBadge(
   }
 }
 
-export function QueueList({
-  rows,
-  cursor,
-  start,
-  height,
-  width,
-  now,
-  jobs,
-  viewer,
-  approving,
-  spinner = "◐",
-}: QueueListProps) {
+export function QueueList({ rows, cursor, start, height, width, now, jobs, viewer, approving, spinner = "◐" }: QueueListProps) {
   const prs = rows.flatMap((r) => (r.kind === "pr" ? [r.pr] : []));
   const refWidth = Math.max(0, ...prs.map((pr) => ref(pr).length));
   const showDiff = width >= SHOW_DIFF_MIN_WIDTH;
@@ -77,8 +66,7 @@ export function QueueList({
   const authorWidth = showAuthor
     ? Math.min(MAX_AUTHOR_WIDTH, Math.max(0, ...prs.map((pr) => (pr.author === viewer ? 0 : pr.author.length + 1))))
     : 0;
-  const fixedWidth =
-    2 + refWidth + 2 + (showAuthor ? authorWidth + 2 : 0) + (showDiff ? diffWidth + 2 : 0) + 5;
+  const fixedWidth = 2 + refWidth + 2 + (showAuthor ? authorWidth + 2 : 0) + (showDiff ? diffWidth + 2 : 0) + 5;
   const titleWidth = Math.max(18, Math.min(64, width - fixedWidth - 32));
 
   return h(
@@ -107,9 +95,7 @@ export function QueueList({
       const { pr } = row;
       const ci = CI_STYLE[pr.ciState];
       const isApproving = approving?.has(pr.id) ?? false;
-      const badge = isApproving
-        ? { text: `${spinner} approving…`, color: "green" }
-        : reviewBadge(jobs.get(pr.id), pr, now, spinner);
+      const badge = isApproving ? { text: `${spinner} approving…`, color: "green" } : reviewBadge(jobs.get(pr.id), pr, now, spinner);
       const authorLabel = pr.author === viewer ? "" : `@${pr.author}`;
       return h(
         Text,
