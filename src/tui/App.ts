@@ -107,6 +107,7 @@ function useTerminalSize() {
   const { stdout } = useStdout();
   const read = () => ({ columns: stdout.columns || 100, rows: stdout.rows || 24 });
   const [size, setSize] = React.useState(read);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: read is recreated every render; depending on it would resubscribe each time.
   React.useEffect(() => {
     const onResize = () => setSize(read());
     stdout.on("resize", onResize);
@@ -235,6 +236,7 @@ export function App({
   const currentJob = current?.kind === "pr" ? reviews.jobs.get(current.pr.id) : undefined;
   const filterActive = filter.trim() !== "";
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: resets scroll when the selected PR changes.
   React.useEffect(() => setDetailScroll(0), [currentKey]);
 
   const select = (index: number) => {
@@ -279,6 +281,7 @@ export function App({
       ? { draft: detailsJob.draft, agent: detailsJob.agent }
       : null;
   const detailsBody = details?.body;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: detailsDraft is a fresh object each render; its fields are the real inputs.
   const detailsStaticLines = React.useMemo(
     () => (detailsBody ? buildDetailsViewLines(detailsDraft, detailsBody, detailsContentWidth) : NO_LINES),
     [detailsDraft?.draft, detailsDraft?.agent, detailsBody, detailsContentWidth],

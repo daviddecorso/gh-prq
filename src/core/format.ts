@@ -16,6 +16,7 @@ const graphemes = new Intl.Segmenter();
 const ZERO_WIDTH = /^[\p{Mn}\p{Me}\p{Cf}]+$/u;
 /** Emoji (including VS16-upgraded text symbols) plus the East Asian Wide/Fullwidth blocks. */
 const WIDE =
+  // biome-ignore lint/suspicious/noMisleadingCharacterClass: matches a bare VS16 inside a grapheme, not a combined pair.
   /[\p{Emoji_Presentation}\u{FE0F}\u{1100}-\u{115F}\u{2E80}-\u{303E}\u{3041}-\u{33FF}\u{3400}-\u{4DBF}\u{4E00}-\u{9FFF}\u{A000}-\u{A4CF}\u{AC00}-\u{D7A3}\u{F900}-\u{FAFF}\u{FE30}-\u{FE4F}\u{FF00}-\u{FF60}\u{FFE0}-\u{FFE6}\u{20000}-\u{3FFFD}]/u;
 
 function graphemeWidth(g: string): number {
