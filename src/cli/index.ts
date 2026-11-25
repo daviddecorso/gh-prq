@@ -4,6 +4,7 @@ import { loadConfig } from "../core/config.ts";
 import { resolveCurrentRepo } from "../core/github.ts";
 import { loadQueue } from "../core/queue.ts";
 import { filterItems } from "./filter.ts";
+import { renderJson } from "./json.ts";
 import { renderPlain } from "./plain.ts";
 
 const HELP = `gh prq — turn-based pull request queue
@@ -12,6 +13,7 @@ Usage: gh prq [flags]
 
   --plain            Grouped table on stdout (default when not a TTY)
   --json             ClassifiedPR[] as JSON
+  --envelope         With --json, wrap the items as { viewer, fetchedAt, staleReason, warnings, items }
   --repo <o/r|.>     Scope to one repo ("." = current git repo)
   --org <org>        Scope to an organization
   --exclude <glob>   Hide repos matching a name or glob, repeatable ("legacy-*", "acme/*")
@@ -28,6 +30,7 @@ function parseFlags() {
       options: {
         plain: { type: "boolean" },
         json: { type: "boolean" },
+        envelope: { type: "boolean" },
         repo: { type: "string" },
         org: { type: "string" },
         exclude: { type: "string", multiple: true },
@@ -52,6 +55,7 @@ async function main(): Promise<number> {
     return 0;
   }
   if (args.reviews && args.mine) throw new Error("--reviews and --mine can't be combined.");
+  if (args.envelope && !args.json) throw new Error("--envelope only applies to --json.");
 
   const baseConfig = loadConfig();
   const config = {
@@ -66,12 +70,13 @@ async function main(): Promise<number> {
   }
 
   const result = await loadQueue({ config, ...scope, refresh: args.refresh, includeApproved: args.all });
-  for (const warning of result.warnings) process.stderr.write(`warning: ${warning}\n`);
+  // --envelope reports cached warnings; repeating them on stderr every cached run is noise.
+  if (!result.fromCache) for (const warning of result.warnings) process.stderr.write(`warning: ${warning}\n`);
   const items = filterItems(result, args, config);
 
   if (args.json) {
     if (result.staleReason) process.stderr.write(`warning: stale cache (${result.staleReason})\n`);
-    process.stdout.write(`${JSON.stringify(items, null, 2)}\n`);
+    process.stdout.write(`${renderJson(result, items, { envelope: args.envelope })}\n`);
     return 0;
   }
 

@@ -149,6 +149,8 @@ export interface ClassifiedPR {
 export interface QueueResult {
   viewer: string;
   fetchedAt: string;
+  /** True when this call didn't hit the API; `warnings` are then from the fetch that wrote the cache. */
+  fromCache: boolean;
   /** Set when the API call failed and these results came from an expired cache entry. */
   staleReason?: string;
   warnings: string[];
