@@ -1,6 +1,6 @@
 import { makeBotMatcher } from "../classifier.ts";
 import type { Config } from "../config.ts";
-import { firstErrorLine, run, type Runner } from "../exec.ts";
+import { firstErrorLine, type Runner, run } from "../exec.ts";
 import type { ClassifiedPR } from "../types.ts";
 
 const FEEDBACK_QUERY = /* GraphQL */ `
@@ -82,8 +82,7 @@ export function selectFeedback(
   if (!head) return null;
   const at = head.pushedDate ?? head.committedDate;
   const cutoff = ms(at);
-  const counts = (c: RawAuthored, when: string | null) =>
-    when != null && ms(when) > cutoff && login(c) !== viewer && !isBot(login(c));
+  const counts = (c: RawAuthored, when: string | null) => when != null && ms(when) > cutoff && login(c) !== viewer && !isBot(login(c));
 
   const threads: FeedbackThread[] = [];
   for (const t of raw.reviewThreads.nodes) {

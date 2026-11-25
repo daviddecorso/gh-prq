@@ -103,7 +103,9 @@ export function buildCodeReviewPrompt(
       context.push(`This is a re-review. There are no new commits since ${lastReviewed}, so focus on the thread replies.`);
       break;
     case "unreachable":
-      context.push(`This is a re-review, but the user's last reviewed commit ${lastReviewed} is gone (likely a force-push). Focus on the code around the threads below.`);
+      context.push(
+        `This is a re-review, but the user's last reviewed commit ${lastReviewed} is gone (likely a force-push). Focus on the code around the threads below.`,
+      );
       break;
   }
   context.push(...threadsSection(pr, true), "", "Don't post anything to GitHub.");
@@ -136,7 +138,8 @@ export function buildFixPrompt(
   }
   if (feedback.reviews.length) {
     lines.push("", "Review summaries:");
-    for (const r of feedback.reviews) lines.push(`${++n}. @${r.author} (${r.state.toLowerCase().replace("_", " ")}): ${quote(r.body, null)}`);
+    for (const r of feedback.reviews)
+      lines.push(`${++n}. @${r.author} (${r.state.toLowerCase().replace("_", " ")}): ${quote(r.body, null)}`);
   }
   if (feedback.comments.length) {
     lines.push("", "Discussion comments:");

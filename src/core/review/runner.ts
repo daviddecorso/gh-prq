@@ -1,5 +1,5 @@
 import type { Config } from "../config.ts";
-import { run, type Runner } from "../exec.ts";
+import { type Runner, run } from "../exec.ts";
 import type { ClassifiedPR } from "../types.ts";
 import type { Agent, AgentRun } from "./agents.ts";
 import { buildCodeReviewPrompt, buildReviewPrompt } from "./prompt.ts";
@@ -15,13 +15,7 @@ export interface RunReviewDeps {
 export const usesClaudeBuiltins = (agent: Agent, config: Config) => agent.id === "claude" && config.agent.claudeBuiltins;
 
 /** Headless reviews keep our own prompt: with /code-review, Claude ignores `--json-schema` and returns its own findings format. */
-export function agentRun(
-  pr: ClassifiedPR,
-  agent: Agent,
-  config: Config,
-  ws: Workspace,
-  interactive = false,
-): AgentRun {
+export function agentRun(pr: ClassifiedPR, agent: Agent, config: Config, ws: Workspace, interactive = false): AgentRun {
   const prompt =
     interactive && usesClaudeBuiltins(agent, config) && ws.delta?.kind !== "no-new-commits"
       ? buildCodeReviewPrompt(pr, ws, config.agent.reviewEffort)

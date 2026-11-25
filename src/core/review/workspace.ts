@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { firstErrorLine, run, type Runner } from "../exec.ts";
+import { firstErrorLine, type Runner, run } from "../exec.ts";
 import { createPRWorktree, hasCommit, remoteForRepo } from "../git.ts";
 import type { ClassifiedPR } from "../types.ts";
 
@@ -32,8 +32,7 @@ export interface WorkspaceDeps {
 
 const defaultDeps: WorkspaceDeps = { exec: run, remoteForRepo, createWorktree: createPRWorktree };
 
-export const isReReview = (pr: ClassifiedPR): pr is ClassifiedPR & { lastReviewedCommitOid: string } =>
-  pr.lastReviewedCommitOid != null;
+export const isReReview = (pr: ClassifiedPR): pr is ClassifiedPR & { lastReviewedCommitOid: string } => pr.lastReviewedCommitOid != null;
 
 /** Writes the delta diff into `contextDir`, preferring local git, then GitHub's compare API. */
 export async function resolveDelta(
@@ -56,11 +55,9 @@ export async function resolveDelta(
     }
   }
   if (diff == null) {
-    const res = await exec(
-      "gh",
-      ["api", "-H", "Accept: application/vnd.github.diff", `repos/${pr.repo}/compare/${old}...${pr.headOid}`],
-      { signal },
-    );
+    const res = await exec("gh", ["api", "-H", "Accept: application/vnd.github.diff", `repos/${pr.repo}/compare/${old}...${pr.headOid}`], {
+      signal,
+    });
     if (res.code === 0) diff = res.stdout;
   }
   if (diff == null) return { kind: "unreachable" };

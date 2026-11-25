@@ -1,9 +1,7 @@
 import { BUCKET_ORDER, type BucketId, type ClassifiedPR } from "../core/types.ts";
 import type { ReviewJob } from "./useReviews.ts";
 
-export type Row =
-  | { kind: "header"; bucket: BucketId; count: number; collapsed: boolean }
-  | { kind: "pr"; pr: ClassifiedPR };
+export type Row = { kind: "header"; bucket: BucketId; count: number; collapsed: boolean } | { kind: "pr"; pr: ClassifiedPR };
 
 export const rowKey = (row: Row): string => (row.kind === "header" ? `h:${row.bucket}` : `pr:${row.pr.id}`);
 
@@ -48,7 +46,11 @@ export function clampCursor(cursor: number, rowCount: number): number {
   return Math.max(0, Math.min(cursor, rowCount - 1));
 }
 
-const firstPRIndex = (rows: readonly Row[]) => Math.max(0, rows.findIndex((r) => r.kind === "pr"));
+const firstPRIndex = (rows: readonly Row[]) =>
+  Math.max(
+    0,
+    rows.findIndex((r) => r.kind === "pr"),
+  );
 
 /** Follows the selected row by key; if it's gone, keeps the index, or goes to the first PR when `index` is null. */
 export function restoreCursor(prev: { key: string; index: number | null } | null, rows: readonly Row[]): number {
@@ -90,11 +92,7 @@ export function keyHints(
     const own = row?.kind === "pr" && row.pr.bucket.startsWith("MY_PR");
     const actions =
       job?.status === "ready"
-        ? [
-            "p post",
-            ...(row?.kind === "pr" && job.headOid !== row.pr.headOid ? ["a re-review"] : []),
-            "x discard",
-          ]
+        ? ["p post", ...(row?.kind === "pr" && job.headOid !== row.pr.headOid ? ["a re-review"] : []), "x discard"]
         : job?.status === "queued" || job?.status === "running"
           ? ["x cancel"]
           : own

@@ -8,11 +8,7 @@ import { runInAltScreen } from "../src/tui/altScreen.ts";
 import { adjacentHeader, buildRows, keyHints, matchesFilter, restoreCursor, rowKey, scrollWindow } from "../src/tui/model.ts";
 import { item } from "./fixtures.ts";
 
-const items = [
-  item("PR1", "NEEDS_REREVIEW"),
-  item("PR2", "NEEDS_REREVIEW"),
-  item("PR3", "WAITING_ON_AUTHOR"),
-];
+const items = [item("PR1", "NEEDS_REREVIEW"), item("PR2", "NEEDS_REREVIEW"), item("PR3", "WAITING_ON_AUTHOR")];
 
 describe("buildRows", () => {
   test("headers in bucket order with their PRs", () => {
@@ -160,10 +156,11 @@ describe("runInAltScreen", () => {
       const exit = vi.fn();
       let resolveExit!: () => void;
 
-      const done = runInAltScreen(
-        () => ({ unmount, waitUntilExit: () => new Promise<void>((r) => (resolveExit = r)) }),
-        { stdout: { write: (s: string) => writes.push(s) }, proc: proc as unknown as NodeJS.Process, exit },
-      );
+      const done = runInAltScreen(() => ({ unmount, waitUntilExit: () => new Promise<void>((r) => (resolveExit = r)) }), {
+        stdout: { write: (s: string) => writes.push(s) },
+        proc: proc as unknown as NodeJS.Process,
+        exit,
+      });
 
       proc.emit(sig);
       expect(unmount).toHaveBeenCalledTimes(1);

@@ -52,14 +52,7 @@ export const DEFAULT_CONFIG: Config = {
     claudeBuiltins: true,
   },
   filters: {
-    ignoredBots: [
-      "dependabot[bot]",
-      "renovate[bot]",
-      "vercel[bot]",
-      "github-actions[bot]",
-      "codecov[bot]",
-      "claude[bot]",
-    ],
+    ignoredBots: ["dependabot[bot]", "renovate[bot]", "vercel[bot]", "github-actions[bot]", "codecov[bot]", "claude[bot]"],
     ignoredBotPattern: "\\[bot\\]$",
     includeTeamRequests: true,
     mutedTeams: [],

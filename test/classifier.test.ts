@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { classifyPR, type ClassifyOptions } from "../src/core/classifier.ts";
-import { DEFAULT_CONFIG, type Config } from "../src/core/config.ts";
+import { type ClassifyOptions, classifyPR } from "../src/core/classifier.ts";
+import { type Config, DEFAULT_CONFIG } from "../src/core/config.ts";
 import type { Comment, NormalizedPR, Review, ReviewState, ReviewThread } from "../src/core/types.ts";
 
 const ME = "me";
@@ -49,8 +49,7 @@ const thread = (comments: Comment[], isResolved = false): ReviewThread => ({
   comments,
 });
 
-const classify = (p: NormalizedPR, opts?: ClassifyOptions, config: Config = DEFAULT_CONFIG) =>
-  classifyPR(p, ME, config, opts);
+const classify = (p: NormalizedPR, opts?: ClassifyOptions, config: Config = DEFAULT_CONFIG) => classifyPR(p, ME, config, opts);
 const bucketOf = (p: NormalizedPR, opts?: ClassifyOptions, config?: Config) => classify(p, opts, config)?.bucket ?? null;
 
 describe("drafts", () => {
@@ -101,26 +100,20 @@ describe("reviewer: re-review vs waiting", () => {
   });
 
   test("new commits after review", () => {
-    const result = classify(
-      pr({ reviews: [review(ME, "CHANGES_REQUESTED", 1)], headOid: "c1", latestCommitAt: at(2) }),
-    );
+    const result = classify(pr({ reviews: [review(ME, "CHANGES_REQUESTED", 1)], headOid: "c1", latestCommitAt: at(2) }));
     expect(result?.bucket).toBe("NEEDS_REREVIEW");
     expect(result?.reason).toBe("New commits pushed since your review");
     expect(result?.actionSince).toBe(at(2));
   });
 
   test("new head commit with older timestamp still triggers re-review", () => {
-    const result = classify(
-      pr({ reviews: [review(ME, "CHANGES_REQUESTED", 2, "c0")], headOid: "c1", latestCommitAt: at(1) }),
-    );
+    const result = classify(pr({ reviews: [review(ME, "CHANGES_REQUESTED", 2, "c0")], headOid: "c1", latestCommitAt: at(1) }));
     expect(result?.bucket).toBe("NEEDS_REREVIEW");
     expect(result?.reason).toBe("New commits pushed since your review");
   });
 
   test("later COMMENTED review preserves CHANGES_REQUESTED waiting reason", () => {
-    const result = classify(
-      pr({ reviews: [review(ME, "CHANGES_REQUESTED", 1), review(ME, "COMMENTED", 2)] }),
-    );
+    const result = classify(pr({ reviews: [review(ME, "CHANGES_REQUESTED", 1), review(ME, "COMMENTED", 2)] }));
     expect(result?.bucket).toBe("WAITING_ON_AUTHOR");
     expect(result?.reason).toBe("Waiting on requested changes");
   });
@@ -184,9 +177,7 @@ describe("reviewer: re-review vs waiting", () => {
   });
 
   test("bot top-level comment after my review is ignored", () => {
-    const result = classify(
-      pr({ reviews: [review(ME, "COMMENTED", 1)], comments: [comment("github-actions[bot]", 2)] }),
-    );
+    const result = classify(pr({ reviews: [review(ME, "COMMENTED", 1)], comments: [comment("github-actions[bot]", 2)] }));
     expect(result?.bucket).toBe("WAITING_ON_AUTHOR");
     expect(result?.reason).toBe("Waiting on author reply");
   });
@@ -262,15 +253,11 @@ describe("author", () => {
   });
 
   test("changes requested before my latest commit means I've responded", () => {
-    expect(bucketOf(mine({ reviews: [review("bob", "CHANGES_REQUESTED", 1)], latestCommitAt: at(2) }))).toBe(
-      "MY_PR_WAITING",
-    );
+    expect(bucketOf(mine({ reviews: [review("bob", "CHANGES_REQUESTED", 1)], latestCommitAt: at(2) }))).toBe("MY_PR_WAITING");
   });
 
   test("a later COMMENTED review doesn't clear changes requested", () => {
-    const result = classify(
-      mine({ reviews: [review("bob", "CHANGES_REQUESTED", 1), review("bob", "COMMENTED", 2)] }),
-    );
+    const result = classify(mine({ reviews: [review("bob", "CHANGES_REQUESTED", 1), review("bob", "COMMENTED", 2)] }));
     expect(result?.bucket).toBe("MY_PR_ACTION_NEEDED");
   });
 

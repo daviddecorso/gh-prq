@@ -25,6 +25,7 @@ Requires Node 22.18+ (runs the TypeScript directly, no build step).
 npm install
 npm test
 npm run typecheck
+npm run lint        # lint:fix to auto-format and apply safe fixes
 node src/cli/index.ts --plain
 ```
 

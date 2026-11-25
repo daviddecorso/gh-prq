@@ -17,8 +17,7 @@ export function makeBotMatcher(filters: Config["filters"]): (login: string) => b
 
 const ms = (iso: string) => Date.parse(iso);
 
-const isAfter = (a: string | null | undefined, b: string | null | undefined): boolean =>
-  a != null && (b == null || ms(a) > ms(b));
+const isAfter = (a: string | null | undefined, b: string | null | undefined): boolean => a != null && (b == null || ms(a) > ms(b));
 
 function maxIso(values: (string | null | undefined)[]): string | null {
   let best: string | null = null;
@@ -47,18 +46,11 @@ function latestDecisiveReviewPerAuthor(reviews: SubmittedReview[]): SubmittedRev
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-export function classifyPR(
-  pr: NormalizedPR,
-  viewer: string,
-  config: Config,
-  opts: ClassifyOptions = {},
-): ClassifiedPR | null {
+export function classifyPR(pr: NormalizedPR, viewer: string, config: Config, opts: ClassifyOptions = {}): ClassifiedPR | null {
   const isBot = makeBotMatcher(config.filters);
   const isHuman = (x: { author: string }) => !isBot(x.author);
 
-  const reviews = pr.reviews.filter(
-    (r): r is SubmittedReview => r.state !== "PENDING" && r.submittedAt != null && isHuman(r),
-  );
+  const reviews = pr.reviews.filter((r): r is SubmittedReview => r.state !== "PENDING" && r.submittedAt != null && isHuman(r));
   const comments = pr.comments.filter(isHuman);
   const unresolvedThreads = pr.threads
     .filter((t) => !t.isResolved)
@@ -132,9 +124,7 @@ export function classifyPR(
     }
 
     if (reasons.length > 0) {
-      const lastWaiting = newest(
-        threadsWaitingOnMe.map((t) => ({ ...t.comments.at(-1)!, path: t.path })),
-      );
+      const lastWaiting = newest(threadsWaitingOnMe.map((t) => ({ ...t.comments.at(-1)!, path: t.path })));
       return make("MY_PR_ACTION_NEEDED", reasons, lastActivityAt, { snippet: lastWaiting });
     }
 
@@ -186,26 +176,18 @@ export function classifyPR(
   const threadReply = newest(
     myThreads.flatMap((t) => {
       const last = t.comments.at(-1)!;
-      return last.author !== viewer && isAfter(last.createdAt, lastMyReview?.submittedAt)
-        ? [{ ...last, path: t.path }]
-        : [];
+      return last.author !== viewer && isAfter(last.createdAt, lastMyReview?.submittedAt) ? [{ ...last, path: t.path }] : [];
     }),
   );
-  const authorReply: Comment | null = newest(
-    comments.filter((c) => c.author === pr.author && isAfter(c.createdAt, lastMyInteractionAt)),
-  );
+  const authorReply: Comment | null = newest(comments.filter((c) => c.author === pr.author && isAfter(c.createdAt, lastMyInteractionAt)));
   const hasNewCommits =
     lastMyReview != null &&
-    (lastMyReview.commitOid != null
-      ? pr.headOid !== lastMyReview.commitOid
-      : isAfter(pr.latestCommitAt, lastMyReview.submittedAt));
+    (lastMyReview.commitOid != null ? pr.headOid !== lastMyReview.commitOid : isAfter(pr.latestCommitAt, lastMyReview.submittedAt));
   const iApproved = myDecisiveReview?.state === "APPROVED";
   const extra = { lastReviewedCommitOid };
 
   if (iApproved && !isDirectlyRequested && !threadReply) {
-    return opts.includeApproved
-      ? make("WAITING_ON_AUTHOR", ["Approved by you"], lastMyReview!.submittedAt, extra)
-      : null;
+    return opts.includeApproved ? make("WAITING_ON_AUTHOR", ["Approved by you"], lastMyReview!.submittedAt, extra) : null;
   }
 
   if (isDirectlyRequested && lastMyReview) {

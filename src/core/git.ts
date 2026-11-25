@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { firstErrorLine, run, type Runner } from "./exec.ts";
+import { firstErrorLine, type Runner, run } from "./exec.ts";
 
 const REMOTE_REPO_RE = /^(?:https?:\/\/[^/]+\/|ssh:\/\/[^/]+\/|[^@/\s]+@[^:/\s]+:)([^/\s]+\/[^/\s]+?)(?:\.git)?$/;
 

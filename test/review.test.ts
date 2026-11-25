@@ -4,9 +4,9 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { DEFAULT_CONFIG } from "../src/core/config.ts";
 import type { RunOptions, RunResult } from "../src/core/exec.ts";
+import { AGENTS, ALLOWED_TOOLS, availableAgents, extractJson } from "../src/core/review/agents.ts";
 import { approvePR, postDraft, toReviewPayload } from "../src/core/review/post.ts";
 import { buildCodeReviewPrompt, buildReviewPrompt } from "../src/core/review/prompt.ts";
-import { AGENTS, ALLOWED_TOOLS, availableAgents, extractJson } from "../src/core/review/agents.ts";
 import { agentRun, runHeadlessReview } from "../src/core/review/runner.ts";
 import type { ReviewDraft } from "../src/core/review/schema.ts";
 import { prepareWorkspace, resolveDelta, type Workspace } from "../src/core/review/workspace.ts";
@@ -94,9 +94,7 @@ describe("buildReviewPrompt", () => {
   test("inlineSchema asks for bare JSON in headless runs only", () => {
     const pr = item("PR1", "NEEDS_INITIAL_REVIEW");
     expect(buildReviewPrompt(pr, { local: true }, { inlineSchema: true }).prompt).toContain('"suggestedVerdict"');
-    expect(buildReviewPrompt(pr, { local: true }, { inlineSchema: true, interactive: true }).prompt).not.toContain(
-      '"suggestedVerdict"',
-    );
+    expect(buildReviewPrompt(pr, { local: true }, { inlineSchema: true, interactive: true }).prompt).not.toContain('"suggestedVerdict"');
   });
 
   test("interactive prompts don't ask for structured output", () => {
@@ -295,7 +293,9 @@ describe("runHeadlessReview", () => {
 
   test("surfaces claude errors and still cleans up", async () => {
     const ws = workspace();
-    const exec = fakeExec([["claude", ["-p"], { code: 1, stdout: JSON.stringify({ is_error: true, result: "rate limited" }), stderr: "" }]]);
+    const exec = fakeExec([
+      ["claude", ["-p"], { code: 1, stdout: JSON.stringify({ is_error: true, result: "rate limited" }), stderr: "" }],
+    ]);
     await expect(
       runHeadlessReview(item("PR1", "NEEDS_INITIAL_REVIEW"), DEFAULT_CONFIG, AGENTS.claude, { exec, prepare: async () => ws }),
     ).rejects.toThrow("claude failed: rate limited");

@@ -29,7 +29,10 @@ describe("loadConfig agent", () => {
 
   test("the agent block wins over the legacy block and merges models", () => {
     const { agent } = loadConfig(
-      configFile({ claude: { model: "opus", maxConcurrent: 4 }, agent: { default: "gemini", maxConcurrent: 1, models: { gemini: "pro" } } }),
+      configFile({
+        claude: { model: "opus", maxConcurrent: 4 },
+        agent: { default: "gemini", maxConcurrent: 1, models: { gemini: "pro" } },
+      }),
     );
     expect(agent).toMatchObject({ default: "gemini", maxConcurrent: 1, models: { claude: "opus", gemini: "pro" } });
   });
