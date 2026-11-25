@@ -60,6 +60,7 @@ const ACTION_HELP_LINES: [string, string][] = [
   ["d", "full details & draft reader"],
   ["c", "check out (exits)"],
   ["f", "check out & fix new comments with agent (exits)"],
+  ["S", "check out & start /steward on your PR (exits)"],
   ["y", "copy URL"],
   ["a", "agent drafts a review in background"],
   ["A", "interactive agent session (exits)"],
@@ -83,6 +84,8 @@ export interface AppProps {
   onCheckout: (pr: ClassifiedPR) => void;
   onHandoff: (pr: ClassifiedPR, agent: Agent) => void;
   onFix: (pr: ClassifiedPR, agent: Agent, feedback: Feedback) => void;
+  /** Unset when Claude's built-in commands are turned off. */
+  onSteward?: (pr: ClassifiedPR) => void;
 }
 
 interface Confirm {
@@ -169,6 +172,7 @@ export function App({
   onCheckout,
   onHandoff,
   onFix,
+  onSteward,
 }: AppProps) {
   const { exit } = useApp();
   const { columns, rows: termRows } = useTerminalSize();
@@ -185,6 +189,7 @@ export function App({
   const [agentIndex, setAgentIndex] = React.useState(0);
   const activeAgent = agents[agentIndex];
   const canSwitchAgent = agents.length > 1;
+  const canSteward = Boolean(onSteward && agents.some((a) => a.id === "claude"));
   const [confirm, setConfirm] = React.useState<Confirm | null>(null);
   const [quitArmed, setQuitArmed] = React.useState(false);
   const approvingRef = React.useRef(new Set<string>());
@@ -283,7 +288,7 @@ export function App({
     : detailsStaticLines;
   const detailsMaxScroll = details ? Math.max(0, detailsLines.length - Math.max(1, listHeight - 2)) : 0;
 
-  const actionHelp = ACTION_HELP_LINES.filter(([keys]) => keys !== "m" || canSwitchAgent);
+  const actionHelp = ACTION_HELP_LINES.filter(([keys]) => (keys !== "m" || canSwitchAgent) && (keys !== "S" || canSteward));
   const twoColHelp = columns >= TWO_COL_HELP_MIN_COLUMNS;
   const helpVisibleHeight = Math.max(1, listHeight - 1);
   const helpRowCount = twoColHelp
@@ -406,6 +411,25 @@ export function App({
     );
   };
 
+  const startSteward = (pr: ClassifiedPR) => {
+    if (!canSteward || !onSteward) return info("Steward needs Claude with claudeBuiltins on");
+    const viewer = queue.result?.viewer;
+    if (!viewer) return info("Wait for the queue to load");
+    if (pr.author !== viewer) return info("Steward only works on your own PRs");
+    const guard = runningGuard("wait or cancel them (x) first");
+    if (guard) return info(guard);
+    const blocker = actions.checkoutBlocker(pr);
+    if (blocker) return error(blocker);
+    // Always asks: the watch commits, pushes and replies to reviewers under the user's name.
+    setConfirm(
+      yesNo(`Steward commits, pushes and replies to reviewers on ${ref(pr)} as you until /ship stop. Continue? y/n`, () => {
+        fixingRef.current?.controller.abort();
+        onSteward(pr);
+        exit();
+      }),
+    );
+  };
+
   const fixFeedback = (pr: ClassifiedPR) =>
     withAgent((agent) => {
       if (fixingRef.current) return info(`Already loading comments for ${fixingRef.current.prRef}`);
@@ -521,6 +545,7 @@ export function App({
       if (input === "a") return startReview(detailsPR);
       if (input === "x") return discardReview(detailsPR);
       if (input === "f") return fixFeedback(detailsPR);
+      if (input === "S") return startSteward(detailsPR);
       if (input === "m" && canSwitchAgent) {
         const next = (agentIndex + 1) % agents.length;
         setAgentIndex(next);
@@ -589,6 +614,7 @@ export function App({
     }
     if (input === "a") return withPR(startReview);
     if (input === "f") return withPR(fixFeedback);
+    if (input === "S") return withPR(startSteward);
     if (input === "A") {
       return withPR((pr) =>
         withAgent((agent) => {

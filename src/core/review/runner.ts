@@ -2,7 +2,7 @@ import type { Config } from "../config.ts";
 import { run, type Runner } from "../exec.ts";
 import type { ClassifiedPR } from "../types.ts";
 import type { Agent, AgentRun } from "./agents.ts";
-import { buildReviewPrompt } from "./prompt.ts";
+import { buildCodeReviewPrompt, buildReviewPrompt } from "./prompt.ts";
 import { parseDraft, type ReviewDraft } from "./schema.ts";
 import { prepareWorkspace, type Workspace } from "./workspace.ts";
 
@@ -12,6 +12,9 @@ export interface RunReviewDeps {
   signal?: AbortSignal;
 }
 
+export const usesClaudeBuiltins = (agent: Agent, config: Config) => agent.id === "claude" && config.agent.claudeBuiltins;
+
+/** Headless reviews keep our own prompt: with /code-review, Claude ignores `--json-schema` and returns its own findings format. */
 export function agentRun(
   pr: ClassifiedPR,
   agent: Agent,
@@ -19,7 +22,10 @@ export function agentRun(
   ws: Workspace,
   interactive = false,
 ): AgentRun {
-  const prompt = buildReviewPrompt(pr, ws, { interactive, inlineSchema: agent.inlineSchema });
+  const prompt =
+    interactive && usesClaudeBuiltins(agent, config) && ws.delta?.kind !== "no-new-commits"
+      ? buildCodeReviewPrompt(pr, ws, config.agent.reviewEffort)
+      : buildReviewPrompt(pr, ws, { interactive, inlineSchema: agent.inlineSchema });
   return { prompt: prompt.prompt, systemPrompt: prompt.appendSystemPrompt, model: config.agent.models[agent.id], ws };
 }
 

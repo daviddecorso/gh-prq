@@ -7,7 +7,7 @@ import type { ClassifiedPR } from "../types.ts";
 
 /** What changed since the viewer's last reviewed commit. */
 export type Delta =
-  | { kind: "diff"; path: string }
+  | { kind: "diff"; path: string; local: boolean }
   | { kind: "no-new-commits" }
   /** The old commit is gone (force-push), so only the full diff is available. */
   | { kind: "unreachable" };
@@ -47,9 +47,13 @@ export async function resolveDelta(
   if (old === pr.headOid) return { kind: "no-new-commits" };
 
   let diff: string | null = null;
+  let local = false;
   if (worktree && (await hasCommit(old, exec, worktree, signal))) {
     const res = await exec("git", ["diff", old, pr.headOid], { cwd: worktree, signal });
-    if (res.code === 0) diff = res.stdout;
+    if (res.code === 0) {
+      diff = res.stdout;
+      local = true;
+    }
   }
   if (diff == null) {
     const res = await exec(
@@ -63,7 +67,7 @@ export async function resolveDelta(
 
   const path = join(contextDir, "since-last-review.diff");
   writeFileSync(path, diff);
-  return { kind: "diff", path };
+  return { kind: "diff", path, local };
 }
 
 export async function prepareWorkspace(

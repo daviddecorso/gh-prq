@@ -165,6 +165,16 @@ describe("buildFixPrompt", () => {
     });
     expect(prompt).toContain("TAIL_MARKER");
   });
+
+  test("asks for /code-review --fix only when requested and includes reviewEffort", () => {
+    const feedback = { since: { oid: "head123456", at: COMMIT_AT }, threads: [], reviews: [], comments: [] };
+    const pr = item("PR7", "MY_PR_ACTION_NEEDED");
+    expect(buildFixPrompt(pr, feedback).prompt).not.toContain("/code-review");
+    expect(buildFixPrompt(pr, feedback, { codeReview: true }).prompt).toMatch(/After the feedback is addressed, run \/code-review --fix/);
+    expect(buildFixPrompt(pr, feedback, { codeReview: true, reviewEffort: "high" }).prompt).toMatch(
+      /After the feedback is addressed, run \/code-review high --fix/,
+    );
+  });
 });
 
 describe("agent fix args", () => {

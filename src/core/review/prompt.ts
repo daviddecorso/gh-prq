@@ -1,3 +1,4 @@
+import type { ReviewEffort } from "../config.ts";
 import type { ClassifiedPR } from "../types.ts";
 import type { Feedback } from "./feedback.ts";
 import { REVIEW_DRAFT_SCHEMA } from "./schema.ts";
@@ -79,10 +80,47 @@ export function buildReviewPrompt(
   return { prompt: lines.join("\n"), appendSystemPrompt: SYSTEM_PROMPT };
 }
 
+/** `/code-review` reads everything after its flags as the target, so PR context goes in the system prompt. */
+export function buildCodeReviewPrompt(
+  pr: ClassifiedPR,
+  ws: PromptWorkspace,
+  effort?: ReviewEffort,
+): { prompt: string; appendSystemPrompt: string } {
+  const lastReviewed = pr.lastReviewedCommitOid?.slice(0, 7);
+  const delta = ws.delta;
+  const useRange = ws.local && delta?.kind === "diff" && delta.local && pr.lastReviewedCommitOid != null;
+  const target = useRange ? `${pr.lastReviewedCommitOid}..${pr.headOid}` : pr.url;
+  const context = [`The review is of ${pr.repo}#${pr.number} "${pr.title}" by @${pr.author} (${pr.url}), head ${pr.headOid}.`];
+  switch (delta?.kind) {
+    case "diff":
+      context.push(
+        useRange
+          ? `This is a re-review. The user last reviewed ${lastReviewed}, so the target covers only the changes since then.`
+          : `This is a re-review. The user last reviewed ${lastReviewed}. Focus on the changes since then, in ${delta.path}.`,
+      );
+      break;
+    case "no-new-commits":
+      context.push(`This is a re-review. There are no new commits since ${lastReviewed}, so focus on the thread replies.`);
+      break;
+    case "unreachable":
+      context.push(`This is a re-review, but the user's last reviewed commit ${lastReviewed} is gone (likely a force-push). Focus on the code around the threads below.`);
+      break;
+  }
+  context.push(...threadsSection(pr, true), "", "Don't post anything to GitHub.");
+  return {
+    prompt: ["/code-review", effort, target].filter(Boolean).join(" "),
+    appendSystemPrompt: `${SYSTEM_PROMPT}\n\n${context.join("\n")}`,
+  };
+}
+
 const FIX_SYSTEM_PROMPT = `You're helping the user address review feedback on their pull request.
 Don't commit, push, or post anything to GitHub unless the user asks.`;
 
-export function buildFixPrompt(pr: ClassifiedPR, feedback: Feedback): { prompt: string; appendSystemPrompt: string } {
+export function buildFixPrompt(
+  pr: ClassifiedPR,
+  feedback: Feedback,
+  { codeReview = false, reviewEffort }: { codeReview?: boolean; reviewEffort?: ReviewEffort } = {},
+): { prompt: string; appendSystemPrompt: string } {
   const lines = [
     `The working directory is checked out on the branch for ${pr.repo}#${pr.number} "${pr.title}" (${pr.url}).`,
     `Address the feedback below, posted since the last commit ${feedback.since.oid.slice(0, 7)} (${feedback.since.at}).`,
@@ -105,5 +143,9 @@ export function buildFixPrompt(pr: ClassifiedPR, feedback: Feedback): { prompt: 
     for (const c of feedback.comments) lines.push(`${++n}. @${c.author}: ${quote(c.body, null)}`);
   }
   lines.push("", "Start by listing what you plan to change for each item, then make the changes.");
+  if (codeReview) {
+    const cmd = ["/code-review", reviewEffort, "--fix"].filter(Boolean).join(" ");
+    lines.push(`After the feedback is addressed, run ${cmd} on the branch's changes.`);
+  }
   return { prompt: lines.join("\n"), appendSystemPrompt: FIX_SYSTEM_PROMPT };
 }

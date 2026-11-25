@@ -11,7 +11,7 @@ import { availableAgents, type Agent } from "../core/review/agents.ts";
 import { feedbackCount, loadFeedback, type Feedback } from "../core/review/feedback.ts";
 import { postDraft } from "../core/review/post.ts";
 import { buildFixPrompt } from "../core/review/prompt.ts";
-import { agentRun, runHeadlessReview } from "../core/review/runner.ts";
+import { agentRun, runHeadlessReview, usesClaudeBuiltins } from "../core/review/runner.ts";
 import { prepareWorkspace } from "../core/review/workspace.ts";
 import type { ClassifiedPR, QueueResult } from "../core/types.ts";
 import { defaultActions, runCheckout } from "./actions.ts";
@@ -55,13 +55,27 @@ async function runHandoff(pr: ClassifiedPR, agent: Agent, config: Config): Promi
 function runFix(pr: ClassifiedPR, agent: Agent, feedback: Feedback, config: Config): number {
   const checkedOut = runCheckout(pr);
   if (checkedOut !== 0) return checkedOut;
-  const { prompt, appendSystemPrompt } = buildFixPrompt(pr, feedback);
+  const { prompt, appendSystemPrompt } = buildFixPrompt(pr, feedback, {
+    codeReview: usesClaudeBuiltins(agent, config),
+    reviewEffort: config.agent.reviewEffort,
+  });
   const n = feedbackCount(feedback);
   process.stderr.write(`Handing ${n} item${n === 1 ? "" : "s"} of feedback on ${pr.repo}#${pr.number} to ${agent.label}…\n`);
   const res = spawnSync(agent.id, agent.fix({ prompt, systemPrompt: appendSystemPrompt, model: config.agent.models[agent.id] }), {
     stdio: "inherit",
   });
   if (res.error) throw new Error(`Couldn't start ${agent.id}: ${res.error.message}`);
+  return res.status ?? 1;
+}
+
+/** Runs after Ink unmounts: checks out the branch, then starts a /steward watch, which pushes and replies as the user. */
+function runSteward(pr: ClassifiedPR, config: Config): number {
+  const checkedOut = runCheckout(pr);
+  if (checkedOut !== 0) return checkedOut;
+  process.stderr.write(`Starting /steward on ${pr.repo}#${pr.number}. Run /ship stop to end the watch.\n`);
+  const model = config.agent.models.claude;
+  const res = spawnSync("claude", [`/steward ${pr.url}`, ...(model ? ["--model", model] : [])], { stdio: "inherit" });
+  if (res.error) throw new Error(`Couldn't start claude: ${res.error.message}`);
   return res.status ?? 1;
 }
 
@@ -87,7 +101,10 @@ export async function runTui({ config, scope, flags }: RunTuiOptions): Promise<n
     | { kind: "checkout"; pr: ClassifiedPR }
     | { kind: "handoff"; pr: ClassifiedPR; agent: Agent }
     | { kind: "fix"; pr: ClassifiedPR; agent: Agent; feedback: Feedback }
+    | { kind: "steward"; pr: ClassifiedPR }
     | null;
+
+  const agents = availableAgents(config.agent.default);
 
   await runInAltScreen(() =>
     render(
@@ -100,7 +117,7 @@ export async function runTui({ config, scope, flags }: RunTuiOptions): Promise<n
         },
         reviewer: makeReviewer(config),
         review: config.agent,
-        agents: availableAgents(config.agent.default),
+        agents,
         collapseWaitingByDefault: config.ui.collapseWaitingByDefault,
         showDetailByDefault: config.ui.showDetailByDefault,
         autoRefreshSeconds: config.ui.autoRefreshSeconds,
@@ -113,6 +130,12 @@ export async function runTui({ config, scope, flags }: RunTuiOptions): Promise<n
         onFix: (pr, agent, feedback) => {
           after = { kind: "fix", pr, agent, feedback };
         },
+        onSteward:
+          config.agent.claudeBuiltins && agents.some((a) => a.id === "claude")
+            ? (pr) => {
+                after = { kind: "steward", pr };
+              }
+            : undefined,
       }),
     ),
   );
@@ -120,5 +143,6 @@ export async function runTui({ config, scope, flags }: RunTuiOptions): Promise<n
   if (after?.kind === "checkout") return runCheckout(after.pr);
   if (after?.kind === "handoff") return runHandoff(after.pr, after.agent, config);
   if (after?.kind === "fix") return runFix(after.pr, after.agent, after.feedback, config);
+  if (after?.kind === "steward") return runSteward(after.pr, config);
   return 0;
 }
