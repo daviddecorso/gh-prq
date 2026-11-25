@@ -31,5 +31,5 @@ export function item(id: string, bucket: BucketId, overrides: Partial<Classified
 }
 
 export function result(items: ClassifiedPR[], overrides: Partial<QueueResult> = {}): QueueResult {
-  return { viewer: "me", fetchedAt: new Date(NOW).toISOString(), warnings: [], items, ...overrides };
+  return { viewer: "me", fetchedAt: new Date(NOW).toISOString(), fromCache: false, warnings: [], items, ...overrides };
 }

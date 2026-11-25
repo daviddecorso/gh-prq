@@ -48,10 +48,11 @@ const cacheKeyFor = (opts: Scope, token: string) =>
     org: opts.org ?? null,
   });
 
-function toResult(snapshot: QueueSnapshot, opts: LoadQueueOptions, staleReason?: string): QueueResult {
+function toResult(snapshot: QueueSnapshot, opts: LoadQueueOptions, fromCache: boolean, staleReason?: string): QueueResult {
   return {
     viewer: snapshot.viewer,
     fetchedAt: snapshot.fetchedAt,
+    fromCache,
     staleReason,
     warnings: snapshot.warnings,
     items: classifySnapshot(snapshot, opts.config, opts.includeApproved),
@@ -67,7 +68,7 @@ export function loadCachedQueue(opts: LoadQueueOptions): QueueResult | null {
     return null;
   }
   const snapshot = readCache(cacheKeyFor(opts, token), Infinity);
-  return snapshot ? toResult(snapshot, opts) : null;
+  return snapshot ? toResult(snapshot, opts, true) : null;
 }
 
 /** Fetches (or reads from cache) and classifies the viewer's queue. Falls back to a stale cache when offline. */
@@ -75,21 +76,16 @@ export async function loadQueue(opts: LoadQueueOptions): Promise<QueueResult> {
   const token = getGhToken();
   const cacheKey = cacheKeyFor(opts, token);
 
-  let snapshot = opts.refresh ? null : readCache(cacheKey, opts.config.ui.cacheTtlSeconds);
-  let staleReason: string | undefined;
+  const cached = opts.refresh ? null : readCache(cacheKey, opts.config.ui.cacheTtlSeconds);
+  if (cached) return toResult(cached, opts, true);
 
-  if (!snapshot) {
-    try {
-      snapshot = await fetchSnapshot({ repo: opts.repo, org: opts.org }, token);
-      // Warnings describe this fetch only; caching them would repeat them on every cached run.
-      writeCache(cacheKey, { ...snapshot, warnings: [] });
-    } catch (err) {
-      const stale = err instanceof GhAuthError ? null : readCache(cacheKey, Infinity);
-      if (!stale) throw err;
-      snapshot = stale;
-      staleReason = (err as Error).message;
-    }
+  try {
+    const snapshot = await fetchSnapshot({ repo: opts.repo, org: opts.org }, token);
+    writeCache(cacheKey, snapshot);
+    return toResult(snapshot, opts, false);
+  } catch (err) {
+    const stale = err instanceof GhAuthError ? null : readCache(cacheKey, Infinity);
+    if (!stale) throw err;
+    return toResult(stale, opts, true, (err as Error).message);
   }
-
-  return toResult(snapshot, opts, staleReason);
 }

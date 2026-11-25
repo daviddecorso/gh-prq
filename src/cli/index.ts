@@ -70,7 +70,8 @@ async function main(): Promise<number> {
   }
 
   const result = await loadQueue({ config, ...scope, refresh: args.refresh, includeApproved: args.all });
-  for (const warning of result.warnings) process.stderr.write(`warning: ${warning}\n`);
+  // --envelope reports cached warnings; repeating them on stderr every cached run is noise.
+  if (!result.fromCache) for (const warning of result.warnings) process.stderr.write(`warning: ${warning}\n`);
   const items = filterItems(result, args, config);
 
   if (args.json) {
