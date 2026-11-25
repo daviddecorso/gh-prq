@@ -32,11 +32,11 @@ node src/cli/index.ts --plain
 ## Layout
 
 - `src/core/` has no UI dependencies (GraphQL fetch, classifier, cache, config) and is reused by every frontend.
-- `src/cli/` holds the arg parser, shared item filter, and the `--plain` renderer.
+- `src/cli/` holds the arg parser, shared item filter, and the `--plain` and `--json` renderers.
 - `src/tui/` is the Ink TUI. Components are plain `.ts` using `React.createElement` (Node's type stripping can't run `.tsx`); `model.ts` holds the pure row/cursor/scroll logic.
 - `test/` covers each bucket transition, the TUI model, and the TUI app via `ink-testing-library`.
 
-`gh prq` opens the TUI in the alternate screen when stdin and stdout are TTYs, otherwise it prints `--plain`. The TUI shows the last cached queue immediately and refreshes in the background. Press `?` in the TUI for keys. `/` filters by space-separated terms across repo, title, `@author`, reason, badges, `ci:` state, and `is:draft` (esc clears), `]`/`[` jump between buckets, and `J`/`K` scroll the info pane (`ui.showDetailByDefault` defaults to `"auto"`, opening on terminals `>= 180` columns; manual `i` uses a side pane at `>= 120`). `--exclude <glob>` (repeatable) and `filters.excludeRepos` hide repos: `acme/*` matches an owner, a bare `legacy-*` matches the repo name under any owner. `ui.autoRefreshSeconds` in `~/.config/gh-prq/config.json` sets the background refresh (default 300, `0` disables).
+`gh prq` opens the TUI in the alternate screen when stdin and stdout are TTYs, otherwise it prints `--plain`. For scripts and widgets, `--json --envelope` prints `{ viewer, fetchedAt, staleReason, warnings, items }` so a consumer can tell how fresh the queue is and whether it came from a stale cache; plain `--json` prints just the items. The TUI shows the last cached queue immediately and refreshes in the background. Press `?` in the TUI for keys. `/` filters by space-separated terms across repo, title, `@author`, reason, badges, `ci:` state, and `is:draft` (esc clears), `]`/`[` jump between buckets, and `J`/`K` scroll the info pane (`ui.showDetailByDefault` defaults to `"auto"`, opening on terminals `>= 180` columns; manual `i` uses a side pane at `>= 120`). `--exclude <glob>` (repeatable) and `filters.excludeRepos` hide repos: `acme/*` matches an owner, a bare `legacy-*` matches the repo name under any owner. `ui.autoRefreshSeconds` in `~/.config/gh-prq/config.json` sets the background refresh (default 300, `0` disables).
 
 ## Agent reviews
 
