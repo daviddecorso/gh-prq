@@ -34,6 +34,12 @@ describe("loadConfig agent", () => {
     expect(agent).toMatchObject({ default: "gemini", maxConcurrent: 1, models: { claude: "opus", gemini: "pro" } });
   });
 
+  test("claude builtins default on and reviewEffort is validated", () => {
+    expect(DEFAULT_CONFIG.agent.claudeBuiltins).toBe(true);
+    expect(loadConfig(configFile({ agent: { reviewEffort: "high" } })).agent.reviewEffort).toBe("high");
+    expect(() => loadConfig(configFile({ agent: { reviewEffort: "huge" } }))).toThrow("agent.reviewEffort");
+  });
+
   test("an unknown default agent is rejected", () => {
     expect(() => loadConfig(configFile({ agent: { default: "gpt" } }))).toThrow("agent.default");
   });

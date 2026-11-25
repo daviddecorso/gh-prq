@@ -53,6 +53,8 @@ A finished draft rings the terminal bell and shows in the info pane (`i`); `d` o
 
 `f` is for the other side of a review. It collects everything posted since the PR's last commit (unresolved inline review threads, review summaries, and discussion comments, skipping your own and bots'), runs `gh pr checkout` in the cwd, and opens the active agent interactively on that branch with the feedback as its first prompt. Unlike `a` and `A`, this agent can edit files (with its CLI's normal permission prompts); it's told not to commit or push unless you ask.
 
+With Claude, a few of these run Claude Code's built-in commands instead of our prompts. `A` starts `/code-review` on the PR, or on the commits since your last review when the repo is checked out. `f` ends by running `/code-review --fix` over its changes. `S` checks out your own PR and starts `/steward` (Claude Code v2.1.330+), which keeps working on review feedback and failing checks, and commits, pushes, and replies to reviewers as you until you run `/ship stop`. Background drafts (`a`) still use our prompt, because `/code-review` doesn't return the structured draft that `p` posts. Set `agent.claudeBuiltins` to `false` to turn all of this off, and `agent.reviewEffort` (`low` to `max`) to pin the `/code-review` effort level.
+
 ```json
 {
   "agent": {

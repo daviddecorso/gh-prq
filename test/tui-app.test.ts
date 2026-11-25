@@ -56,6 +56,7 @@ function setup(
   const onCheckout = vi.fn();
   const onHandoff = vi.fn();
   const onFix = vi.fn();
+  const onSteward = vi.fn();
   const app = render(
     React.createElement(App, {
       load,
@@ -70,9 +71,10 @@ function setup(
       onCheckout,
       onHandoff,
       onFix,
+      onSteward,
     }),
   );
-  return { ...app, actions, reviewer, onCheckout, onHandoff, onFix };
+  return { ...app, actions, reviewer, onCheckout, onHandoff, onFix, onSteward };
 }
 
 async function press(app: { stdin: { write(s: string): void } }, ...keys: string[]) {
@@ -219,6 +221,26 @@ describe("App", () => {
     await tick();
     await press(app, "f");
     expect(app.onFix).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }), AGENTS.claude, feedback);
+  });
+
+  test("S refuses someone else's PR", async () => {
+    const app = setup(async () => queue);
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "S");
+    expect(app.lastFrame()).toContain("only works on your own PRs");
+    expect(app.onSteward).not.toHaveBeenCalled();
+  });
+
+  test("S on your own PR confirms before handing off to /steward", async () => {
+    const app = setup(async () => result([item("PR1", "MY_PR_ACTION_NEEDED", { author: "me" })]));
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "S");
+    expect(app.lastFrame()).toContain("pushes and replies");
+    expect(app.onSteward).not.toHaveBeenCalled();
+    await press(app, "y");
+    expect(app.onSteward).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }));
   });
 
   test("f from the wrong repo shows why without loading comments", async () => {
@@ -856,6 +878,14 @@ describe("agent reviews", () => {
     expect(frame).toContain("any key to close");
   });
 
+  test("? hides S when Claude isn't installed", async () => {
+    const app = setup(async () => queue, {}, null, {}, 2, [AGENTS.gemini]);
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "?");
+    expect(app.lastFrame()!).not.toContain("/steward");
+  });
+
   test("? scrolls cleanly at 80x24 with two agents", async () => {
     const app = setup(async () => queue, {}, null, {}, 2, [AGENTS.claude, AGENTS.gemini]);
     cleanup = app.unmount;
@@ -868,12 +898,12 @@ describe("agent reviews", () => {
     let frame = app.lastFrame()!;
     expect(frame).toContain("move (or scroll in details)");
     expect(frame).toContain("half page / full page");
-    expect(frame).toContain("↓ 2 more · j/k scroll · any other key to close");
+    expect(frame).toContain("↓ 3 more · j/k scroll · any other key to close");
     expect(frame.split("\n").length).toBeLessThanOrEqual(24);
-    await press(app, "j", "j");
+    await press(app, "j", "j", "j");
     frame = app.lastFrame()!;
     expect(frame).toContain("cancel review or discard draft");
-    expect(frame).toContain("↑ 2 · j/k scroll · any other key to close");
+    expect(frame).toContain("↑ 3 · j/k scroll · any other key to close");
     await press(app, "q");
     expect(app.lastFrame()).toContain("▾ NEEDS RE-REVIEW (1)");
   });

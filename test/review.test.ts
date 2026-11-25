@@ -5,9 +5,9 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { DEFAULT_CONFIG } from "../src/core/config.ts";
 import type { RunOptions, RunResult } from "../src/core/exec.ts";
 import { approvePR, postDraft, toReviewPayload } from "../src/core/review/post.ts";
-import { buildReviewPrompt } from "../src/core/review/prompt.ts";
+import { buildCodeReviewPrompt, buildReviewPrompt } from "../src/core/review/prompt.ts";
 import { AGENTS, ALLOWED_TOOLS, availableAgents, extractJson } from "../src/core/review/agents.ts";
-import { runHeadlessReview } from "../src/core/review/runner.ts";
+import { agentRun, runHeadlessReview } from "../src/core/review/runner.ts";
 import type { ReviewDraft } from "../src/core/review/schema.ts";
 import { prepareWorkspace, resolveDelta, type Workspace } from "../src/core/review/workspace.ts";
 import type { ClassifiedPR } from "../src/core/types.ts";
@@ -70,7 +70,7 @@ describe("buildReviewPrompt", () => {
   });
 
   test("re-review points at the delta and inlines the viewer's threads", () => {
-    const { prompt } = buildReviewPrompt(reReview, { local: true, delta: { kind: "diff", path: "/tmp/x/since.diff" } });
+    const { prompt } = buildReviewPrompt(reReview, { local: true, delta: { kind: "diff", path: "/tmp/x/since.diff", local: true } });
     expect(prompt).toContain("last reviewed old1234");
     expect(prompt).toContain("/tmp/x/since.diff");
     expect(prompt).toContain("detached checkout");
@@ -107,6 +107,69 @@ describe("buildReviewPrompt", () => {
   });
 });
 
+describe("buildCodeReviewPrompt", () => {
+  test("first review targets the PR URL", () => {
+    const { prompt } = buildCodeReviewPrompt(item("PR1", "NEEDS_INITIAL_REVIEW"), { local: true }, "high");
+    expect(prompt).toBe("/code-review high https://github.com/acme/api/pull/1");
+  });
+
+  test("local re-review targets the commit range and carries threads in the system prompt", () => {
+    const { prompt, appendSystemPrompt } = buildCodeReviewPrompt(reReview, {
+      local: true,
+      delta: { kind: "diff", path: "/tmp/x/since.diff", local: true },
+    });
+    expect(prompt).toBe("/code-review old1234567..new1234567");
+    expect(appendSystemPrompt).toContain("last reviewed old1234");
+    expect(appendSystemPrompt).toContain("@alice: Fixed in the latest push.");
+    expect(appendSystemPrompt).toContain("Don't post anything to GitHub.");
+  });
+
+  test("local checkout with an API-fallback delta targets the URL and points at the delta file", () => {
+    const { prompt, appendSystemPrompt } = buildCodeReviewPrompt(reReview, {
+      local: true,
+      delta: { kind: "diff", path: "/tmp/x/since.diff", local: false },
+    });
+    expect(prompt).toBe(`/code-review ${reReview.url}`);
+    expect(appendSystemPrompt).toContain("/tmp/x/since.diff");
+  });
+
+  test("re-review without a checkout targets the URL and points at the delta file", () => {
+    const { prompt, appendSystemPrompt } = buildCodeReviewPrompt(reReview, {
+      local: false,
+      delta: { kind: "diff", path: "/tmp/x/since.diff", local: false },
+    });
+    expect(prompt).toBe(`/code-review ${reReview.url}`);
+    expect(appendSystemPrompt).toContain("/tmp/x/since.diff");
+  });
+});
+
+describe("agentRun", () => {
+  const ws: Workspace = { cwd: "/wt", contextDir: "/ctx", local: true, cleanup: () => {} };
+  const pr = item("PR1", "NEEDS_INITIAL_REVIEW");
+
+  test("interactive Claude uses /code-review, headless and other agents keep our prompt", () => {
+    expect(agentRun(pr, AGENTS.claude, DEFAULT_CONFIG, ws, true).prompt).toMatch(/^\/code-review /);
+    expect(agentRun(pr, AGENTS.claude, DEFAULT_CONFIG, ws).prompt).toMatch(/^Review /);
+    expect(agentRun(pr, AGENTS.gemini, DEFAULT_CONFIG, ws, true).prompt).toMatch(/^Review /);
+  });
+
+  test("no-new-commits re-review keeps our prompt instead of running /code-review", () => {
+    const noNew: Workspace = { ...ws, delta: { kind: "no-new-commits" } };
+    expect(agentRun(reReview, AGENTS.claude, DEFAULT_CONFIG, noNew, true).prompt).toMatch(/^Review /);
+  });
+
+  test("claudeBuiltins off keeps our prompt", () => {
+    const config = { ...DEFAULT_CONFIG, agent: { ...DEFAULT_CONFIG.agent, claudeBuiltins: false } };
+    expect(agentRun(pr, AGENTS.claude, config, ws, true).prompt).toMatch(/^Review /);
+  });
+
+  test("interactive Claude may use skills and subagents but not edit", () => {
+    const args = AGENTS.claude.interactive(agentRun(pr, AGENTS.claude, DEFAULT_CONFIG, ws, true));
+    expect(args.slice(args.indexOf("--allowedTools") + 1, args.indexOf("--disallowedTools"))).toEqual([...ALLOWED_TOOLS, "Skill", "Agent"]);
+    expect(args.slice(args.indexOf("--disallowedTools") + 1)).toEqual(["Edit", "Write", "NotebookEdit"]);
+  });
+});
+
 describe("resolveDelta", () => {
   test("uses local git when the old commit exists", async () => {
     const dir = tempDir();
@@ -115,7 +178,7 @@ describe("resolveDelta", () => {
       ["git", ["diff", "old1234567", "new1234567"], ok("LOCAL DIFF")],
     ]);
     const delta = await resolveDelta(reReview, dir, "/wt", exec);
-    expect(delta.kind).toBe("diff");
+    expect(delta).toMatchObject({ kind: "diff", local: true });
     expect(readFileSync((delta as { path: string }).path, "utf8")).toBe("LOCAL DIFF");
   });
 
@@ -126,6 +189,7 @@ describe("resolveDelta", () => {
       ["gh", ["api"], ok("REMOTE DIFF")],
     ]);
     const delta = await resolveDelta(reReview, dir, "/wt", compare);
+    expect(delta).toMatchObject({ kind: "diff", local: false });
     expect(readFileSync((delta as { path: string }).path, "utf8")).toBe("REMOTE DIFF");
     expect(compare).toHaveBeenCalledWith(
       "gh",

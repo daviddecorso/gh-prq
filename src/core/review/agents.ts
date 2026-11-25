@@ -47,7 +47,7 @@ const modelArgs = (model: string | undefined, flag = "--model") => (model ? [fla
 const withSystemPrompt = ({ prompt, systemPrompt }: FixRun) => `${systemPrompt}\n\n${prompt}`;
 
 /** The tool flags are variadic, so callers put positionals first. */
-function claudeArgs({ systemPrompt, model, ws }: AgentRun): string[] {
+function claudeArgs({ systemPrompt, model, ws }: AgentRun, extraAllowed: string[] = []): string[] {
   return [
     ...modelArgs(model),
     "--append-system-prompt",
@@ -56,6 +56,7 @@ function claudeArgs({ systemPrompt, model, ws }: AgentRun): string[] {
     ws.contextDir,
     "--allowedTools",
     ...ALLOWED_TOOLS,
+    ...extraAllowed,
     "--disallowedTools",
     ...DISALLOWED_TOOLS,
   ];
@@ -79,7 +80,8 @@ const claude: Agent = {
       return out.structured_output;
     },
   }),
-  interactive: (run) => [run.prompt, ...claudeArgs(run)],
+  // /code-review is a skill that fans out to subagents.
+  interactive: (run) => [run.prompt, ...claudeArgs(run, ["Skill", "Agent"])],
   fix: (run) => [run.prompt, ...modelArgs(run.model), "--append-system-prompt", run.systemPrompt],
 };
 

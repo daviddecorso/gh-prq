@@ -3,6 +3,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { AGENT_IDS, type AgentId } from "./review/agents.ts";
 
+export const REVIEW_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type ReviewEffort = (typeof REVIEW_EFFORTS)[number];
+
 /** The pre-`agent` config block, still read so existing config files keep working. */
 interface LegacyClaudeConfig {
   model?: string;
@@ -18,6 +21,10 @@ export interface Config {
     confirmBeforePosting: boolean;
     /** Headless reviews that run at once; the rest queue. */
     maxConcurrent: number;
+    /** Claude runs its bundled /code-review and /steward instead of our prompts. */
+    claudeBuiltins: boolean;
+    /** Effort level for /code-review; unset reuses the level last typed in Claude Code. */
+    reviewEffort?: ReviewEffort;
   };
   filters: {
     ignoredBots: string[];
@@ -42,6 +49,7 @@ export const DEFAULT_CONFIG: Config = {
     models: { claude: "sonnet" },
     confirmBeforePosting: true,
     maxConcurrent: 2,
+    claudeBuiltins: true,
   },
   filters: {
     ignoredBots: [
@@ -99,6 +107,10 @@ export function loadConfig(path = configPath()): Config {
   };
   if (!(AGENT_IDS as readonly string[]).includes(config.agent.default)) {
     throw new Error(`Invalid config: agent.default in ${path} must be one of ${AGENT_IDS.join(", ")}.`);
+  }
+  const effort = config.agent.reviewEffort;
+  if (effort !== undefined && !(REVIEW_EFFORTS as readonly string[]).includes(effort)) {
+    throw new Error(`Invalid config: agent.reviewEffort in ${path} must be one of ${REVIEW_EFFORTS.join(", ")}.`);
   }
   if (typeof config.ui.showDetailByDefault !== "boolean" && config.ui.showDetailByDefault !== "auto") {
     throw new Error(`Invalid config: ui.showDetailByDefault in ${path} must be "auto", true, or false.`);
