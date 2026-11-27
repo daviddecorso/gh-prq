@@ -7,7 +7,8 @@ export const rowKey = (row: Row): string => (row.kind === "header" ? `h:${row.bu
 
 export const bucketOfRow = (row: Row): BucketId => (row.kind === "header" ? row.bucket : row.pr.bucket);
 
-export function matchesFilter(pr: ClassifiedPR, query: string, job?: ReviewJob): boolean {
+/** `tags` are extra searchable words for state the PR itself doesn't carry, e.g. "is:new". */
+export function matchesFilter(pr: ClassifiedPR, query: string, job?: ReviewJob, tags: readonly string[] = []): boolean {
   const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   if (terms.length === 0) return true;
   const parts = [
@@ -18,6 +19,7 @@ export function matchesFilter(pr: ClassifiedPR, query: string, job?: ReviewJob):
     ...pr.badges,
     `ci:${pr.ciState}`,
     job?.status === "ready" || job?.status === "posting" ? "is:draft" : "",
+    ...tags,
   ];
   const haystack = parts.join(" ").toLowerCase();
   return terms.every((term) => haystack.includes(term));
@@ -29,11 +31,12 @@ export function buildRows(
   collapsed: ReadonlySet<BucketId>,
   query = "",
   jobs?: ReadonlyMap<string, ReviewJob>,
+  tagsFor?: (pr: ClassifiedPR) => readonly string[],
 ): Row[] {
   const filtering = query.trim() !== "";
   const rows: Row[] = [];
   for (const bucket of BUCKET_ORDER) {
-    const prs = items.filter((pr) => pr.bucket === bucket && (!filtering || matchesFilter(pr, query, jobs?.get(pr.id))));
+    const prs = items.filter((pr) => pr.bucket === bucket && (!filtering || matchesFilter(pr, query, jobs?.get(pr.id), tagsFor?.(pr))));
     if (prs.length === 0) continue;
     const isCollapsed = !filtering && collapsed.has(bucket);
     rows.push({ kind: "header", bucket, count: prs.length, collapsed: isCollapsed });

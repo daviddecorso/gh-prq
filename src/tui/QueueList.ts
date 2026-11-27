@@ -29,6 +29,7 @@ interface QueueListProps {
   jobs: ReadonlyMap<string, ReviewJob>;
   viewer?: string;
   approving?: ReadonlySet<string>;
+  fresh?: ReadonlySet<string>;
   spinner?: string;
 }
 
@@ -57,7 +58,7 @@ export function reviewBadge(
   }
 }
 
-export function QueueList({ rows, cursor, start, height, width, now, jobs, viewer, approving, spinner = "◐" }: QueueListProps) {
+export function QueueList({ rows, cursor, start, height, width, now, jobs, viewer, approving, fresh, spinner = "◐" }: QueueListProps) {
   const prs = rows.flatMap((r) => (r.kind === "pr" ? [r.pr] : []));
   const refWidth = Math.max(0, ...prs.map((pr) => ref(pr).length));
   const showDiff = width >= SHOW_DIFF_MIN_WIDTH;
@@ -74,7 +75,8 @@ export function QueueList({ rows, cursor, start, height, width, now, jobs, viewe
     { flexDirection: "column", width, height },
     rows.slice(start, start + height).map((row, i) => {
       const selected = start + i === cursor;
-      const pointer = h(Text, { color: "cyan" }, selected ? "›" : " ");
+      const isFresh = row.kind === "pr" && (fresh?.has(row.pr.id) ?? false);
+      const pointer = h(Text, { color: "cyan" }, selected ? "›" : isFresh ? "●" : " ");
 
       if (row.kind === "header") {
         const tone = BUCKET_TONE[row.bucket];

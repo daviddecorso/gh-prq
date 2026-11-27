@@ -33,6 +33,7 @@ function setup(
   maxConcurrent = 2,
   agents: Agent[] = [AGENTS.claude],
   showDetailByDefault: "auto" | boolean = false,
+  autoRefreshSeconds = 0,
 ) {
   const actions: Actions = {
     open: vi.fn((pr: ClassifiedPR) => `Opened ${pr.id}`),
@@ -67,7 +68,7 @@ function setup(
       agents,
       collapseWaitingByDefault: true,
       showDetailByDefault,
-      autoRefreshSeconds: 0,
+      autoRefreshSeconds,
       onCheckout,
       onHandoff,
       onFix,
@@ -132,6 +133,40 @@ describe("App", () => {
     await tick();
     expect(app.lastFrame()).toContain("PR PR1");
     expect(app.lastFrame()).not.toContain("PR OLD");
+  });
+
+  test("marks PRs that became actionable since the cached queue until the cursor leaves them", async () => {
+    const cached = result([item("PR1", "NEEDS_REREVIEW"), item("PR3", "WAITING_ON_AUTHOR")]);
+    const app = setup(async () => result([item("PR3", "NEEDS_REREVIEW"), item("PR1", "NEEDS_REREVIEW")]), {}, cached);
+    cleanup = app.unmount;
+    await tick();
+    expect(app.lastFrame()).toContain("● 1 new");
+    expect(app.lastFrame()).toContain("› acme/api#3");
+    expect(app.actions.bell).not.toHaveBeenCalled();
+    await press(app, "j");
+    expect(app.lastFrame()).not.toContain("●");
+  });
+
+  test("is:new filters to fresh PRs", async () => {
+    const cached = result([item("PR1", "NEEDS_REREVIEW")]);
+    const app = setup(async () => result([item("PR1", "NEEDS_REREVIEW"), item("PR2", "NEEDS_INITIAL_REVIEW")]), {}, cached);
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "/", ..."is:new", "\r");
+    expect(app.lastFrame()).toContain("PR PR2");
+    expect(app.lastFrame()).not.toContain("PR PR1");
+  });
+
+  test("a background refresh that adds actionable PRs rings the bell", async () => {
+    let calls = 0;
+    const load = async () => (calls++ === 0 ? result([item("PR1", "NEEDS_REREVIEW")]) : queue);
+    const app = setup(load, {}, null, {}, 2, [AGENTS.claude], false, 0.05);
+    cleanup = app.unmount;
+    await tick();
+    expect(app.actions.bell).not.toHaveBeenCalled();
+    await new Promise((r) => setTimeout(r, 80));
+    expect(app.actions.bell).toHaveBeenCalledTimes(1);
+    expect(app.lastFrame()).toContain("● acme/api#2");
   });
 
   test("space unfolds the bucket under the cursor", async () => {
@@ -869,7 +904,7 @@ describe("agent reviews", () => {
     const frame = app.lastFrame()!;
     expect(frame).toContain("Navigation");
     expect(frame).toContain("Actions & Reviews");
-    expect(frame).toContain("filter (terms, @author, ci:, is:draft)");
+    expect(frame).toContain("filter (@author, ci:, is:draft, is:new)");
     expect(frame).toContain("post draft (works in details too)");
     expect(frame).toContain("any key to close");
   });

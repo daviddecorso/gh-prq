@@ -11,7 +11,7 @@ import { buildDetailLines, DetailPane, maxDetailScroll } from "./DetailPane.ts";
 import { buildDetailsViewLines, type DetailsBody, DetailsView } from "./DetailsView.ts";
 import { adjacentHeader, bucketOfRow, buildRows, clampCursor, keyHints, restoreCursor, rowKey, scrollWindow } from "./model.ts";
 import { QueueList } from "./QueueList.ts";
-import { type QueueLoader, useQueue } from "./useQueue.ts";
+import { type OnFresh, type QueueLoader, useQueue } from "./useQueue.ts";
 import { type Reviewer, type ReviewSettled, useReviews } from "./useReviews.ts";
 
 const h = React.createElement;
@@ -49,7 +49,7 @@ const NAV_HELP_LINES: [string, string][] = [
   ["] / [", "next / previous bucket"],
   ["space / tab", "fold or unfold the bucket"],
   ["enter / o", "open in browser (enter folds bucket)"],
-  ["/", "filter (terms, @author, ci:, is:draft)"],
+  ["/", "filter (@author, ci:, is:draft, is:new)"],
   ["i", "toggle the info pane"],
   ["J / K", "scroll the info pane"],
   ["r", "refresh"],
@@ -177,8 +177,13 @@ export function App({
 }: AppProps) {
   const { exit } = useApp();
   const { columns, rows: termRows } = useTerminalSize();
-  const queue = useQueue(load, autoRefreshSeconds, initial);
   const { status, info, error } = useStatus();
+  const onFresh: OnFresh = (ids, trigger) => {
+    if (trigger !== "auto") return;
+    actions.bell();
+    info(`${ids.length} new in your queue (● marks them)`);
+  };
+  const queue = useQueue(load, autoRefreshSeconds, initial, onFresh);
   const onReviewSettled: ReviewSettled = (pr, agent, outcome) => {
     actions.bell();
     if (outcome.ok) info(`${agent.label} draft ready for ${ref(pr)} (d to read)`);
@@ -227,15 +232,22 @@ export function App({
   const [helpScroll, setHelpScroll] = React.useState(0);
 
   const items = queue.result?.items ?? NO_ITEMS;
-  const rows = React.useMemo(() => buildRows(items, collapsed, filter, reviews.jobs), [items, collapsed, filter, reviews.jobs]);
+  const { fresh, markSeen } = queue;
+  const rows = React.useMemo(
+    () => buildRows(items, collapsed, filter, reviews.jobs, (pr) => (fresh.has(pr.id) ? ["is:new"] : [])),
+    [items, collapsed, filter, reviews.jobs, fresh],
+  );
   const cursor = restoreCursor(selection, rows);
   const current = rows[cursor];
   const currentKey = current ? rowKey(current) : null;
+  const currentPRId = current?.kind === "pr" ? current.pr.id : null;
   const currentJob = current?.kind === "pr" ? reviews.jobs.get(current.pr.id) : undefined;
   const filterActive = filter.trim() !== "";
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: resets scroll when the selected PR changes.
   React.useEffect(() => setDetailScroll(0), [currentKey]);
+  // A PR counts as seen once the cursor leaves it, so a fresh row under the startup cursor keeps its marker until you move.
+  React.useEffect(() => () => void (currentPRId && markSeen(currentPRId)), [currentPRId, markSeen]);
 
   const select = (index: number) => {
     const next = clampCursor(index, rows.length);
@@ -646,6 +658,7 @@ export function App({
     result
       ? h(Text, { dimColor: true }, `${actionable} actionable · ${waiting} waiting · updated ${relativeTime(result.fetchedAt, now)} ago`)
       : null,
+    fresh.size > 0 ? h(Text, { color: "cyan" }, `  ● ${fresh.size} new`) : null,
     reviews.activeCount > 0 ? h(Text, { color: "magenta" }, `  ${spinner} ${reviews.activeCount} reviewing`) : null,
     readyCount > 0 ? h(Text, { color: "magenta" }, `  ✎ ${readyCount} draft${readyCount === 1 ? "" : "s"}`) : null,
     canSwitchAgent ? h(Text, { color: "magenta" }, `  ⇄ ${activeAgent!.id}`) : null,
@@ -747,6 +760,7 @@ export function App({
       jobs: reviews.jobs,
       viewer: result.viewer,
       approving,
+      fresh,
       spinner,
     });
     body = sideDetail
