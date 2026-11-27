@@ -32,6 +32,8 @@ export interface Config {
     includeTeamRequests: boolean;
     mutedTeams: string[];
     excludeRepos: string[];
+    /** List open PRs you only commented on (no review, no request) once the author replies. */
+    includeCommentOnly: boolean;
   };
   ui: {
     cacheTtlSeconds: number;
@@ -57,6 +59,7 @@ export const DEFAULT_CONFIG: Config = {
     includeTeamRequests: true,
     mutedTeams: [],
     excludeRepos: [],
+    includeCommentOnly: true,
   },
   ui: {
     cacheTtlSeconds: 30,
@@ -117,6 +120,9 @@ export function loadConfig(path = configPath()): Config {
     if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
       throw new Error(`Invalid config: ui.${field} in ${path} must be a number of at least 0.`);
     }
+  }
+  if (typeof config.filters.includeCommentOnly !== "boolean") {
+    throw new Error(`Invalid config: filters.includeCommentOnly in ${path} must be true or false.`);
   }
   if (typeof config.filters.ignoredBotPattern !== "string") {
     throw new Error(`Invalid config: filters.ignoredBotPattern in ${path} must be a string.`);
