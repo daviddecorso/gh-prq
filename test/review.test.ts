@@ -5,6 +5,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { DEFAULT_CONFIG } from "../src/core/config.ts";
 import type { RunOptions, RunResult } from "../src/core/exec.ts";
 import { AGENTS, ALLOWED_TOOLS, availableAgents, extractJson } from "../src/core/review/agents.ts";
+import { fileDraftStore } from "../src/core/review/drafts.ts";
 import { approvePR, postDraft, toReviewPayload } from "../src/core/review/post.ts";
 import { buildCodeReviewPrompt, buildReviewPrompt } from "../src/core/review/prompt.ts";
 import { agentRun, runHeadlessReview } from "../src/core/review/runner.ts";
@@ -466,5 +467,24 @@ describe("posting", () => {
   test("approve reports a blocking pending review", async () => {
     const exec = fakeExec([["gh", ["api"], fail("User can only have one pending review per pull request (HTTP 422)")]]);
     await expect(approvePR(pr, exec)).rejects.toThrow("pending review on acme/api#7");
+  });
+});
+
+describe("fileDraftStore", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  test("drops and deletes drafts older than 30 days", () => {
+    const cache = tempDir();
+    vi.stubEnv("XDG_CACHE_HOME", cache);
+    const save = (number: number, daysAgo: number) => {
+      const pr = item(`PR${number}`, "NEEDS_INITIAL_REVIEW", { repo: "acme/api", number });
+      const createdAt = new Date(Date.now() - daysAgo * 86_400_000).toISOString();
+      fileDraftStore.save(pr, { prId: pr.id, headOid: pr.headOid, createdAt, draft: DRAFT });
+    };
+    save(1, 29);
+    save(2, 31);
+
+    expect(fileDraftStore.load().map((d) => d.prId)).toEqual(["PR1"]);
+    expect(existsSync(join(cache, "gh-prq", "drafts", "acme__api#2.json"))).toBe(false);
   });
 });

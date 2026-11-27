@@ -20,6 +20,8 @@ export interface DraftStore {
   remove(pr: ClassifiedPR): void;
 }
 
+const MAX_DRAFT_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
 const draftsDir = () => join(cacheDir(), "drafts");
 const draftFile = (pr: ClassifiedPR) => join(draftsDir(), `${pr.repo.replace("/", "__")}#${pr.number}.json`);
 
@@ -31,12 +33,21 @@ export const fileDraftStore: DraftStore = {
     } catch {
       return [];
     }
+    const cutoff = Date.now() - MAX_DRAFT_AGE_MS;
     return names.flatMap((name) => {
+      const path = join(draftsDir(), name);
+      let saved: SavedDraft;
       try {
-        return [JSON.parse(readFileSync(join(draftsDir(), name), "utf8")) as SavedDraft];
+        saved = JSON.parse(readFileSync(path, "utf8")) as SavedDraft;
       } catch {
         return [];
       }
+      // Closed or merged PRs never come back to discard their drafts, so age is the only signal.
+      if (Date.parse(saved.createdAt) < cutoff) {
+        rmSync(path, { force: true });
+        return [];
+      }
+      return [saved];
     });
   },
   save(pr, saved) {
