@@ -40,6 +40,9 @@ function setup(
     openFiles: vi.fn(),
     copy: vi.fn((pr: ClassifiedPR) => `Copied ${pr.id}`),
     approve: vi.fn(async (pr: ClassifiedPR) => `Approved ${pr.id}`),
+    merge: vi.fn(async (pr: ClassifiedPR, method: string) => `Merged ${pr.id} via ${method}`),
+    markReady: vi.fn(async (pr: ClassifiedPR) => `Ready ${pr.id}`),
+    rerequestReviews: vi.fn(async (pr: ClassifiedPR) => `Re-requested on ${pr.id}`),
     checkoutBlocker: vi.fn(() => null),
     loadDetails: vi.fn(async (pr: ClassifiedPR) => `PR body for ${pr.id}`),
     loadFeedback: vi.fn(async () => NO_FEEDBACK),
@@ -167,6 +170,64 @@ describe("App", () => {
     await new Promise((r) => setTimeout(r, 80));
     expect(app.actions.bell).toHaveBeenCalledTimes(1);
     expect(app.lastFrame()).toContain("● acme/api#2");
+  });
+
+  test("M asks for a merge method on your ready PR, then merges and refreshes", async () => {
+    const load = vi.fn(async () => result([item("PR1", "MY_PR_READY", { author: "me" })]));
+    const app = setup(load);
+    cleanup = app.unmount;
+    await tick();
+    expect(app.lastFrame()).toContain("M merge");
+    await press(app, "M");
+    expect(app.lastFrame()).toContain("s squash · m merge · r rebase");
+    await press(app, "s");
+    expect(app.actions.merge).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }), "squash");
+    expect(app.lastFrame()).toContain("Merged PR1 via squash");
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  test("M, D and R only act on your own PRs in the matching bucket", async () => {
+    const app = setup(async () => queue);
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "M");
+    expect(app.lastFrame()).toContain("M merges your own PRs");
+    await press(app, "D");
+    expect(app.lastFrame()).toContain("D marks your own draft PRs");
+    await press(app, "R");
+    expect(app.lastFrame()).toContain("R re-requests reviews on your own open PRs");
+    expect(app.actions.merge).not.toHaveBeenCalled();
+    expect(app.actions.markReady).not.toHaveBeenCalled();
+    expect(app.actions.rerequestReviews).not.toHaveBeenCalled();
+  });
+
+  test("D marks your draft ready after confirming", async () => {
+    const app = setup(async () => result([item("PR1", "DRAFTS", { author: "me" })]));
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "D", "n");
+    expect(app.actions.markReady).not.toHaveBeenCalled();
+    await press(app, "D", "y");
+    expect(app.actions.markReady).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }));
+  });
+
+  test("R names the past reviewers it will re-request", async () => {
+    const app = setup(async () => result([item("PR1", "MY_PR_ACTION_NEEDED", { author: "me", pastReviewers: ["bob", "carol"] })]));
+    cleanup = app.unmount;
+    await tick();
+    expect(app.lastFrame()).toContain("R re-request");
+    await press(app, "R");
+    expect(app.lastFrame()).toContain("Re-request review from @bob, @carol on acme/api#1? y/n");
+    await press(app, "y");
+    expect(app.actions.rerequestReviews).toHaveBeenCalledWith(expect.objectContaining({ id: "PR1" }));
+  });
+
+  test("R with nobody to re-request says so without asking", async () => {
+    const app = setup(async () => result([item("PR1", "MY_PR_ACTION_NEEDED", { author: "me" })]));
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "R");
+    expect(app.lastFrame()).toContain("No past reviewers to re-request");
   });
 
   test("space unfolds the bucket under the cursor", async () => {
@@ -929,12 +990,12 @@ describe("agent reviews", () => {
     let frame = app.lastFrame()!;
     expect(frame).toContain("move (or scroll in details)");
     expect(frame).toContain("half page / full page");
-    expect(frame).toContain("↓ 3 more · j/k scroll · any other key to close");
+    expect(frame).toContain("↓ 6 more · j/k scroll · any other key to close");
     expect(frame.split("\n").length).toBeLessThanOrEqual(24);
-    await press(app, "j", "j", "j");
+    await press(app, "j", "j", "j", "j", "j", "j");
     frame = app.lastFrame()!;
-    expect(frame).toContain("cancel review or discard draft");
-    expect(frame).toContain("↑ 3 · j/k scroll · any other key to close");
+    expect(frame).toContain("re-request past reviewers");
+    expect(frame).toContain("↑ 6 · j/k scroll · any other key to close");
     await press(app, "q");
     expect(app.lastFrame()).toContain("▾ NEEDS RE-REVIEW (1)");
   });
@@ -970,6 +1031,9 @@ describe("agent reviews", () => {
             openFiles: vi.fn(),
             copy: vi.fn(() => ""),
             approve: vi.fn(async () => ""),
+            merge: vi.fn(async () => ""),
+            markReady: vi.fn(async () => ""),
+            rerequestReviews: vi.fn(async () => ""),
             checkoutBlocker: vi.fn(() => null),
             loadDetails: vi.fn(async () => ""),
             loadFeedback: vi.fn(async () => NO_FEEDBACK),

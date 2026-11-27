@@ -82,6 +82,15 @@ export function scrollWindow(cursor: number, rowCount: number, height: number, p
 export interface KeyHintOptions {
   showDetail?: boolean;
   detailsOpen?: boolean;
+  viewer?: string;
+}
+
+const isOwnPR = (pr: ClassifiedPR, viewer?: string) => pr.bucket.startsWith("MY_PR") || (viewer != null && pr.author === viewer);
+
+function ownPRHints(pr: ClassifiedPR): string[] {
+  if (pr.bucket === "MY_PR_READY") return ["M merge"];
+  if (pr.bucket === "DRAFTS") return ["D ready"];
+  return pr.pastReviewers.length > 0 ? ["R re-request"] : [];
 }
 
 /** Footer hints for the selected row; `? help` leads so truncation never hides it. */
@@ -89,17 +98,17 @@ export function keyHints(
   row: Row | undefined,
   job: ReviewJob | undefined,
   filterActive: boolean,
-  { showDetail = false, detailsOpen = false }: KeyHintOptions = {},
+  { showDetail = false, detailsOpen = false, viewer }: KeyHintOptions = {},
 ): string {
   if (detailsOpen) {
-    const own = row?.kind === "pr" && row.pr.bucket.startsWith("MY_PR");
+    const own = row?.kind === "pr" && isOwnPR(row.pr, viewer);
     const actions =
       job?.status === "ready"
         ? ["p post", ...(row?.kind === "pr" && job.headOid !== row.pr.headOid ? ["a re-review"] : []), "x discard"]
         : job?.status === "queued" || job?.status === "running"
           ? ["x cancel"]
           : own
-            ? ["f fix comments"]
+            ? [...ownPRHints(row.pr), "f fix comments"]
             : ["a review", "v approve"];
     return ["esc back", "j/k scroll", ...actions, "o open", "y copy"].join("  ");
   }
@@ -113,7 +122,7 @@ export function keyHints(
   else if (job?.status === "ready") {
     middle = ["d read draft", "p post", ...(stale ? ["a re-review"] : []), "x discard", "o open", "i info"];
   } else if (job?.status === "failed") middle = ["a retry", "x clear", "o open", "i info"];
-  else if (row.pr.bucket.startsWith("MY_PR")) middle = ["o open", "f fix comments", "d details", "i info", "c checkout"];
+  else if (isOwnPR(row.pr, viewer)) middle = ["o open", ...ownPRHints(row.pr), "f fix comments", "d details", "i info", "c checkout"];
   else middle = ["o open", "a review", "v approve", "d details", "i info", "c checkout"];
   if (showDetail && row?.kind === "pr") middle = [...middle, "J/K scroll"];
   return ["? help", ...middle, ...tail].join("  ");

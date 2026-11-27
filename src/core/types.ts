@@ -140,6 +140,8 @@ export interface ClassifiedPR {
   };
   /** Unresolved threads the viewer commented in, oldest comment first. */
   viewerThreads: ViewerThread[];
+  /** Humans other than the viewer and author who submitted a review and aren't currently requested; who `R` re-requests. */
+  pastReviewers: string[];
   /** Small row annotations, e.g. "team", "draft review". */
   badges: string[];
   updatedAt: string;

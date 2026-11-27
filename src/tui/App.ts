@@ -68,6 +68,9 @@ const ACTION_HELP_LINES: [string, string][] = [
   ["p", "post draft (works in details too)"],
   ["v", "approve"],
   ["x", "cancel review or discard draft"],
+  ["M", "merge your ready PR (auto-merge)"],
+  ["D", "mark your draft ready for review"],
+  ["R", "re-request past reviewers"],
 ];
 
 export interface AppProps {
@@ -198,8 +201,8 @@ export function App({
   const canSteward = Boolean(onSteward && agents.some((a) => a.id === "claude"));
   const [confirm, setConfirm] = React.useState<Confirm | null>(null);
   const [quitArmed, setQuitArmed] = React.useState(false);
-  const approvingRef = React.useRef(new Set<string>());
-  const [approving, setApproving] = React.useState<ReadonlySet<string>>(() => new Set());
+  const busyRef = React.useRef(new Map<string, string>());
+  const [busy, setBusy] = React.useState<ReadonlyMap<string, string>>(() => new Map());
   const [details, setDetails] = React.useState<DetailsState | null>(null);
   const detailsAbort = React.useRef<AbortController | null>(null);
   const fixingRef = React.useRef<{ prRef: string; controller: AbortController } | null>(null);
@@ -207,7 +210,7 @@ export function App({
 
   const now = useNow(reviews.activeCount > 0);
   const spinner = useSpinner(
-    reviews.activeCount > 0 || queue.refreshing || approving.size > 0 || Boolean(details?.body.loading) || fixing !== null,
+    reviews.activeCount > 0 || queue.refreshing || busy.size > 0 || Boolean(details?.body.loading) || fixing !== null,
   );
 
   React.useEffect(
@@ -395,28 +398,70 @@ export function App({
     });
   };
 
-  const approveReview = (pr: ClassifiedPR) => {
-    if (pr.author === queue.result?.viewer) return info("You can't approve your own PR");
-    if (approvingRef.current.has(pr.id)) return info(`Already approving ${ref(pr)}`);
-    // Always asks: an approval is public the moment it lands, unlike a pending review.
+  /** Runs a GitHub-side action on `pr`, showing `label` on its row until it settles, then refreshes. */
+  const runPRAction = (pr: ClassifiedPR, label: string, action: () => Promise<string>) => {
+    busyRef.current.set(pr.id, label);
+    setBusy(new Map(busyRef.current));
+    info(`${label[0]!.toUpperCase()}${label.slice(1)} ${ref(pr)}…`);
+    action()
+      .then((msg) => {
+        info(msg);
+        queue.refresh();
+      })
+      .catch((err: Error) => error(firstLine(err.message)))
+      .finally(() => {
+        busyRef.current.delete(pr.id);
+        setBusy(new Map(busyRef.current));
+      });
+  };
+  const busyGuard = (pr: ClassifiedPR) => {
+    const label = busyRef.current.get(pr.id);
+    return label ? `Already ${label} ${ref(pr)}` : null;
+  };
+  const isOwn = (pr: ClassifiedPR) => pr.author === queue.result?.viewer;
+
+  const mergeOwnPR = (pr: ClassifiedPR) => {
+    if (!isOwn(pr) || pr.bucket !== "MY_PR_READY") return info("M merges your own PRs in Ready to Merge");
+    const guard = busyGuard(pr);
+    if (guard) return info(guard);
+    const choices: Confirm["choices"] = {};
+    for (const [key, method] of [
+      ["s", "squash"],
+      ["m", "merge"],
+      ["r", "rebase"],
+    ] as const) {
+      choices[key] = () => runPRAction(pr, "merging", () => actions.merge(pr, method));
+    }
+    // Always asks: a merge can't be undone from here.
+    setConfirm({ prompt: `Merge ${ref(pr)} (auto-merge if checks are required): s squash · m merge · r rebase · esc cancel`, choices });
+  };
+
+  const markOwnReady = (pr: ClassifiedPR) => {
+    if (!isOwn(pr) || pr.bucket !== "DRAFTS") return info("D marks your own draft PRs ready for review");
+    const guard = busyGuard(pr);
+    if (guard) return info(guard);
+    setConfirm(yesNo(`Mark ${ref(pr)} ready for review? y/n`, () => runPRAction(pr, "marking ready", () => actions.markReady(pr))));
+  };
+
+  const rerequestOwn = (pr: ClassifiedPR) => {
+    if (!isOwn(pr) || (pr.bucket !== "MY_PR_ACTION_NEEDED" && pr.bucket !== "MY_PR_WAITING")) {
+      return info("R re-requests reviews on your own open PRs");
+    }
+    if (pr.pastReviewers.length === 0) return info(`No past reviewers to re-request on ${ref(pr)}`);
+    const guard = busyGuard(pr);
+    if (guard) return info(guard);
+    const who = pr.pastReviewers.map((r) => `@${r}`).join(", ");
     setConfirm(
-      yesNo(`Approve ${ref(pr)}? y/n`, () => {
-        approvingRef.current.add(pr.id);
-        setApproving(new Set(approvingRef.current));
-        info(`Approving ${ref(pr)}…`);
-        actions
-          .approve(pr)
-          .then((msg) => {
-            info(msg);
-            queue.refresh();
-          })
-          .catch((err: Error) => error(err.message))
-          .finally(() => {
-            approvingRef.current.delete(pr.id);
-            setApproving(new Set(approvingRef.current));
-          });
-      }),
+      yesNo(`Re-request review from ${who} on ${ref(pr)}? y/n`, () => runPRAction(pr, "re-requesting", () => actions.rerequestReviews(pr))),
     );
+  };
+
+  const approveReview = (pr: ClassifiedPR) => {
+    if (isOwn(pr)) return info("You can't approve your own PR");
+    const guard = busyGuard(pr);
+    if (guard) return info(guard);
+    // Always asks: an approval is public the moment it lands, unlike a pending review.
+    setConfirm(yesNo(`Approve ${ref(pr)}? y/n`, () => runPRAction(pr, "approving", () => actions.approve(pr))));
   };
 
   const startSteward = (pr: ClassifiedPR) => {
@@ -554,6 +599,9 @@ export function App({
       if (input === "x") return discardReview(detailsPR);
       if (input === "f") return fixFeedback(detailsPR);
       if (input === "S") return startSteward(detailsPR);
+      if (input === "M") return mergeOwnPR(detailsPR);
+      if (input === "D") return markOwnReady(detailsPR);
+      if (input === "R") return rerequestOwn(detailsPR);
       if (input === "m" && canSwitchAgent) {
         const next = (agentIndex + 1) % agents.length;
         setAgentIndex(next);
@@ -642,6 +690,9 @@ export function App({
     if (input === "p") return withPR(postReview);
     if (input === "v") return withPR(approveReview);
     if (input === "x") return withPR(discardReview);
+    if (input === "M") return withPR(mergeOwnPR);
+    if (input === "D") return withPR(markOwnReady);
+    if (input === "R") return withPR(rerequestOwn);
   });
 
   const result = queue.result;
@@ -759,7 +810,7 @@ export function App({
       now,
       jobs: reviews.jobs,
       viewer: result.viewer,
-      approving,
+      busy,
       fresh,
       spinner,
     });
@@ -795,7 +846,11 @@ export function App({
   } else {
     const hintRow = detailsOpen && detailsPR ? ({ kind: "pr", pr: detailsPR } as const) : current;
     const hintJob = detailsOpen ? detailsJob : currentJob;
-    footer = h(Text, { dimColor: true, wrap: "truncate-end" }, keyHints(hintRow, hintJob, filterActive, { showDetail, detailsOpen }));
+    footer = h(
+      Text,
+      { dimColor: true, wrap: "truncate-end" },
+      keyHints(hintRow, hintJob, filterActive, { showDetail, detailsOpen, viewer: result?.viewer }),
+    );
   }
 
   return h(

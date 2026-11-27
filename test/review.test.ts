@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { DEFAULT_CONFIG } from "../src/core/config.ts";
 import type { RunOptions, RunResult } from "../src/core/exec.ts";
+import { markReady, mergePR, rerequestReviews } from "../src/core/prActions.ts";
 import { AGENTS, ALLOWED_TOOLS, availableAgents, extractJson } from "../src/core/review/agents.ts";
 import { fileDraftStore } from "../src/core/review/drafts.ts";
 import { approvePR, postDraft, toReviewPayload } from "../src/core/review/post.ts";
@@ -467,6 +468,42 @@ describe("posting", () => {
   test("approve reports a blocking pending review", async () => {
     const exec = fakeExec([["gh", ["api"], fail("User can only have one pending review per pull request (HTTP 422)")]]);
     await expect(approvePR(pr, exec)).rejects.toThrow("pending review on acme/api#7");
+  });
+});
+
+describe("PR actions", () => {
+  const own = item("PR7", "MY_PR_READY", { author: "me", headOid: "abc", pastReviewers: ["bob"] });
+
+  test("merge uses --auto with the chosen method and pins the head commit", async () => {
+    const exec = fakeExec([["gh", ["pr", "merge"], ok()]]);
+    expect(await mergePR(own, "rebase", exec)).toContain("Merge requested on acme/api#7");
+    expect(exec).toHaveBeenCalledWith("gh", ["pr", "merge", own.url, "--auto", "--rebase", "--match-head-commit", "abc"]);
+  });
+
+  test("merge failures surface gh's first error line", async () => {
+    const exec = fakeExec([["gh", ["pr", "merge"], fail("Pull request is not mergeable\nmore")]]);
+    await expect(mergePR(own, "squash", exec)).rejects.toThrow("Merge failed: Pull request is not mergeable");
+  });
+
+  test("markReady runs gh pr ready", async () => {
+    const exec = fakeExec([["gh", ["pr", "ready"], ok()]]);
+    expect(await markReady(own, exec)).toBe("acme/api#7 is ready for review");
+  });
+
+  test("rerequestReviews posts the past reviewers", async () => {
+    let body: unknown;
+    const exec = fakeExec([
+      [
+        "gh",
+        ["api", "--method", "POST", "repos/acme/api/pulls/7/requested_reviewers"],
+        (_args, opts) => {
+          body = JSON.parse(opts!.input!);
+          return ok("{}");
+        },
+      ],
+    ]);
+    expect(await rerequestReviews(own, exec)).toBe("Re-requested @bob on acme/api#7");
+    expect(body).toEqual({ reviewers: ["bob"] });
   });
 });
 

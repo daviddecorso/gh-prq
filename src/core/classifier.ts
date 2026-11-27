@@ -61,6 +61,10 @@ export function classifyPR(pr: NormalizedPR, viewer: string, config: Config, opt
     .filter((t) => t.comments.some((c) => c.author === viewer))
     .map(({ path, isOutdated, comments }) => ({ path, isOutdated, comments }));
 
+  const pastReviewers = [
+    ...new Set(reviews.map((r) => r.author).filter((a) => a !== viewer && a !== pr.author && !pr.requestedUsers.includes(a))),
+  ];
+
   const badges: string[] = [];
   if (pr.reviews.some((r) => r.state === "PENDING" && r.author === viewer)) badges.push("draft review");
 
@@ -97,6 +101,7 @@ export function classifyPR(pr: NormalizedPR, viewer: string, config: Config, opt
     commitCount: pr.commitCount ?? pr.commits?.length ?? 0,
     ...(extra.snippet ? { latestReplySnippet: extra.snippet } : {}),
     viewerThreads,
+    pastReviewers,
     badges,
     updatedAt: pr.updatedAt,
     actionSince,
