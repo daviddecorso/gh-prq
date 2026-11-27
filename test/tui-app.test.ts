@@ -6,6 +6,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { AGENTS, type Agent } from "../src/core/review/agents.ts";
 import type { Feedback } from "../src/core/review/feedback.ts";
 import type { ReviewDraft } from "../src/core/review/schema.ts";
+import { type Snoozes, snoozeEntry } from "../src/core/snooze.ts";
 import type { ClassifiedPR, QueueResult } from "../src/core/types.ts";
 import { App, AUTO_DETAIL_MIN_COLUMNS } from "../src/tui/App.ts";
 import type { Actions } from "../src/tui/actions.ts";
@@ -34,7 +35,9 @@ function setup(
   agents: Agent[] = [AGENTS.claude],
   showDetailByDefault: "auto" | boolean = false,
   autoRefreshSeconds = 0,
+  savedSnoozes: Snoozes = {},
 ) {
+  const snoozeStore = { load: vi.fn(() => savedSnoozes), save: vi.fn() };
   const actions: Actions = {
     open: vi.fn((pr: ClassifiedPR) => `Opened ${pr.id}`),
     openFiles: vi.fn(),
@@ -72,13 +75,14 @@ function setup(
       collapseWaitingByDefault: true,
       showDetailByDefault,
       autoRefreshSeconds,
+      snoozeStore,
       onCheckout,
       onHandoff,
       onFix,
       onSteward,
     }),
   );
-  return { ...app, actions, reviewer, onCheckout, onHandoff, onFix, onSteward };
+  return { ...app, actions, reviewer, snoozeStore, onCheckout, onHandoff, onFix, onSteward };
 }
 
 async function press(app: { stdin: { write(s: string): void } }, ...keys: string[]) {
@@ -228,6 +232,35 @@ describe("App", () => {
     await tick();
     await press(app, "R");
     expect(app.lastFrame()).toContain("No past reviewers to re-request");
+  });
+
+  test("z snoozes the selected PR, Z shows it again, z wakes it", async () => {
+    const app = setup(async () => queue);
+    cleanup = app.unmount;
+    await tick();
+    await press(app, "z");
+    expect(app.lastFrame()).not.toContain("PR PR1");
+    expect(app.lastFrame()).toContain("1 snoozed (Z to show)");
+    expect(app.snoozeStore.save).toHaveBeenLastCalledWith({ PR1: expect.objectContaining({ bucket: "NEEDS_REREVIEW" }) });
+    await press(app, "Z");
+    expect(app.lastFrame()).toMatch(/acme\/api#1 .*\[snoozed\]/);
+    await press(app, "g", "j", "z");
+    expect(app.lastFrame()).toContain("Woke acme/api#1");
+    expect(app.lastFrame()).not.toContain("[snoozed]");
+    expect(app.snoozeStore.save).toHaveBeenLastCalledWith({});
+  });
+
+  test("a snoozed PR comes back once it has new activity", async () => {
+    const pr = item("PR1", "NEEDS_REREVIEW");
+    let current = result([pr]);
+    const app = setup(async () => current, {}, null, {}, 2, [AGENTS.claude], false, 0, { PR1: snoozeEntry(pr) });
+    cleanup = app.unmount;
+    await tick();
+    expect(app.lastFrame()).not.toContain("PR PR1");
+    current = result([{ ...pr, headOid: "c2" }]);
+    await press(app, "r");
+    expect(app.lastFrame()).toContain("PR PR1");
+    expect(app.snoozeStore.save).toHaveBeenLastCalledWith({});
   });
 
   test("space unfolds the bucket under the cursor", async () => {
@@ -965,7 +998,7 @@ describe("agent reviews", () => {
     const frame = app.lastFrame()!;
     expect(frame).toContain("Navigation");
     expect(frame).toContain("Actions & Reviews");
-    expect(frame).toContain("filter (@author, ci:, is:draft, is:new)");
+    expect(frame).toContain("filter (@who, ci:, is:draft|new|snoozed)");
     expect(frame).toContain("post draft (works in details too)");
     expect(frame).toContain("any key to close");
   });
@@ -990,12 +1023,12 @@ describe("agent reviews", () => {
     let frame = app.lastFrame()!;
     expect(frame).toContain("move (or scroll in details)");
     expect(frame).toContain("half page / full page");
-    expect(frame).toContain("↓ 6 more · j/k scroll · any other key to close");
+    expect(frame).toContain("↓ 8 more · j/k scroll · any other key to close");
     expect(frame.split("\n").length).toBeLessThanOrEqual(24);
-    await press(app, "j", "j", "j", "j", "j", "j");
+    await press(app, ..."jjjjjjjj");
     frame = app.lastFrame()!;
-    expect(frame).toContain("re-request past reviewers");
-    expect(frame).toContain("↑ 6 · j/k scroll · any other key to close");
+    expect(frame).toContain("show or hide snoozed PRs");
+    expect(frame).toContain("↑ 8 · j/k scroll · any other key to close");
     await press(app, "q");
     expect(app.lastFrame()).toContain("▾ NEEDS RE-REVIEW (1)");
   });

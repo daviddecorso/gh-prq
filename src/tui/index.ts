@@ -13,6 +13,7 @@ import { postDraft } from "../core/review/post.ts";
 import { buildFixPrompt } from "../core/review/prompt.ts";
 import { agentRun, runHeadlessReview, usesClaudeBuiltins } from "../core/review/runner.ts";
 import { prepareWorkspace } from "../core/review/workspace.ts";
+import { fileSnoozeStore } from "../core/snooze.ts";
 import type { ClassifiedPR, QueueResult } from "../core/types.ts";
 import { App } from "./App.ts";
 import { defaultActions, runCheckout } from "./actions.ts";
@@ -121,6 +122,7 @@ export async function runTui({ config, scope, flags }: RunTuiOptions): Promise<n
         collapseWaitingByDefault: config.ui.collapseWaitingByDefault,
         showDetailByDefault: config.ui.showDetailByDefault,
         autoRefreshSeconds: config.ui.autoRefreshSeconds,
+        snoozeStore: fileSnoozeStore,
         onCheckout: (pr) => {
           after = { kind: "checkout", pr };
         },

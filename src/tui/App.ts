@@ -5,6 +5,7 @@ import { displayWidth, relativeTime } from "../core/format.ts";
 import { AGENT_IDS, type Agent } from "../core/review/agents.ts";
 import { type Feedback, feedbackCount } from "../core/review/feedback.ts";
 import { EVENT_FOR_VERDICT, type ReviewEvent } from "../core/review/post.ts";
+import { isSnoozed, pruneSnoozes, type SnoozeStore, type Snoozes, snoozeEntry } from "../core/snooze.ts";
 import { ACTIONABLE_BUCKETS, type BucketId, type ClassifiedPR, type QueueResult, WAITING_BUCKETS } from "../core/types.ts";
 import type { Actions } from "./actions.ts";
 import { buildDetailLines, DetailPane, maxDetailScroll } from "./DetailPane.ts";
@@ -49,7 +50,7 @@ const NAV_HELP_LINES: [string, string][] = [
   ["] / [", "next / previous bucket"],
   ["space / tab", "fold or unfold the bucket"],
   ["enter / o", "open in browser (enter folds bucket)"],
-  ["/", "filter (@author, ci:, is:draft, is:new)"],
+  ["/", "filter (@who, ci:, is:draft|new|snoozed)"],
   ["i", "toggle the info pane"],
   ["J / K", "scroll the info pane"],
   ["r", "refresh"],
@@ -71,7 +72,14 @@ const ACTION_HELP_LINES: [string, string][] = [
   ["M", "merge your ready PR (auto-merge)"],
   ["D", "mark your draft ready for review"],
   ["R", "re-request past reviewers"],
+  ["z", "snooze until new activity (again to wake)"],
+  ["Z", "show or hide snoozed PRs"],
 ];
+
+const memorySnoozeStore: SnoozeStore = {
+  load: () => ({}),
+  save: () => {},
+};
 
 export interface AppProps {
   load: QueueLoader;
@@ -84,6 +92,8 @@ export interface AppProps {
   collapseWaitingByDefault: boolean;
   showDetailByDefault?: "auto" | boolean;
   autoRefreshSeconds: number;
+  /** Defaults to an in-memory store that forgets on exit. */
+  snoozeStore?: SnoozeStore;
   onCheckout: (pr: ClassifiedPR) => void;
   onHandoff: (pr: ClassifiedPR, agent: Agent) => void;
   onFix: (pr: ClassifiedPR, agent: Agent, feedback: Feedback) => void;
@@ -173,6 +183,7 @@ export function App({
   collapseWaitingByDefault,
   showDetailByDefault = false,
   autoRefreshSeconds,
+  snoozeStore = memorySnoozeStore,
   onCheckout,
   onHandoff,
   onFix,
@@ -234,11 +245,32 @@ export function App({
   const [showHelp, setShowHelp] = React.useState(false);
   const [helpScroll, setHelpScroll] = React.useState(0);
 
-  const items = queue.result?.items ?? NO_ITEMS;
+  const allItems = queue.result?.items ?? NO_ITEMS;
+  const [snoozes, setSnoozes] = React.useState(() => snoozeStore.load());
+  const [showSnoozed, setShowSnoozed] = React.useState(false);
+  const updateSnoozes = (next: Snoozes) => {
+    setSnoozes(next);
+    snoozeStore.save(next);
+  };
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only new results can invalidate a snooze.
+  React.useEffect(() => {
+    if (!queue.result) return;
+    const pruned = pruneSnoozes(snoozes, allItems);
+    if (Object.keys(pruned).length !== Object.keys(snoozes).length) updateSnoozes(pruned);
+  }, [allItems]);
+  const snoozed = React.useMemo(() => new Set(allItems.filter((pr) => isSnoozed(pr, snoozes)).map((pr) => pr.id)), [allItems, snoozes]);
+  const items = React.useMemo(
+    () => (showSnoozed || snoozed.size === 0 ? allItems : allItems.filter((pr) => !snoozed.has(pr.id))),
+    [allItems, snoozed, showSnoozed],
+  );
   const { fresh, markSeen } = queue;
   const rows = React.useMemo(
-    () => buildRows(items, collapsed, filter, reviews.jobs, (pr) => (fresh.has(pr.id) ? ["is:new"] : [])),
-    [items, collapsed, filter, reviews.jobs, fresh],
+    () =>
+      buildRows(items, collapsed, filter, reviews.jobs, (pr) => [
+        ...(fresh.has(pr.id) ? ["is:new"] : []),
+        ...(snoozed.has(pr.id) ? ["is:snoozed"] : []),
+      ]),
+    [items, collapsed, filter, reviews.jobs, fresh, snoozed],
   );
   const cursor = restoreCursor(selection, rows);
   const current = rows[cursor];
@@ -318,6 +350,16 @@ export function App({
   const withPR = (fn: (pr: ClassifiedPR) => void) => {
     if (current?.kind === "pr") fn(current.pr);
     else info("Select a PR first");
+  };
+
+  const toggleSnooze = (pr: ClassifiedPR) => {
+    const { [pr.id]: _, ...rest } = snoozes;
+    if (snoozed.has(pr.id)) {
+      updateSnoozes(rest);
+      return info(`Woke ${ref(pr)}`);
+    }
+    updateSnoozes({ ...rest, [pr.id]: snoozeEntry(pr) });
+    info(`Snoozed ${ref(pr)} until new activity${showSnoozed ? "" : " (Z to show)"}`);
   };
 
   const confirmThen = (prompt: string, onYes: () => void) => {
@@ -693,6 +735,12 @@ export function App({
     if (input === "M") return withPR(mergeOwnPR);
     if (input === "D") return withPR(markOwnReady);
     if (input === "R") return withPR(rerequestOwn);
+    if (input === "z") return withPR(toggleSnooze);
+    if (input === "Z") {
+      const next = !showSnoozed;
+      setShowSnoozed(next);
+      return info(next ? `Showing ${snoozed.size} snoozed` : "Hiding snoozed PRs");
+    }
   });
 
   const result = queue.result;
@@ -710,6 +758,7 @@ export function App({
       ? h(Text, { dimColor: true }, `${actionable} actionable · ${waiting} waiting · updated ${relativeTime(result.fetchedAt, now)} ago`)
       : null,
     fresh.size > 0 ? h(Text, { color: "cyan" }, `  ● ${fresh.size} new`) : null,
+    snoozed.size > 0 ? h(Text, { dimColor: true }, `  z ${snoozed.size} snoozed${showSnoozed ? "" : " (Z to show)"}`) : null,
     reviews.activeCount > 0 ? h(Text, { color: "magenta" }, `  ${spinner} ${reviews.activeCount} reviewing`) : null,
     readyCount > 0 ? h(Text, { color: "magenta" }, `  ✎ ${readyCount} draft${readyCount === 1 ? "" : "s"}`) : null,
     canSwitchAgent ? h(Text, { color: "magenta" }, `  ⇄ ${activeAgent!.id}`) : null,
@@ -812,6 +861,7 @@ export function App({
       viewer: result.viewer,
       busy,
       fresh,
+      snoozed,
       spinner,
     });
     body = sideDetail

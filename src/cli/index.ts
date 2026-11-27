@@ -3,6 +3,7 @@ import { parseArgs } from "node:util";
 import { loadConfig } from "../core/config.ts";
 import { resolveCurrentRepo } from "../core/github.ts";
 import { loadQueue } from "../core/queue.ts";
+import { fileSnoozeStore } from "../core/snooze.ts";
 import { filterItems } from "./filter.ts";
 import { renderJson } from "./json.ts";
 import { renderPlain } from "./plain.ts";
@@ -19,7 +20,7 @@ Usage: gh prq [flags]
   --exclude <glob>   Hide repos matching a name or glob, repeatable ("legacy-*", "acme/*")
   --reviews          Only reviewer buckets
   --mine             Only your own PRs (add --all for your drafts)
-  --all              Include PRs you've approved and drafts
+  --all              Include PRs you've approved, drafts and snoozed PRs
   --refresh          Bypass the local cache
   -h, --help         Show this help
 `;
@@ -72,7 +73,7 @@ async function main(): Promise<number> {
   const result = await loadQueue({ config, ...scope, refresh: args.refresh, includeApproved: args.all });
   // --envelope reports cached warnings; repeating them on stderr every cached run is noise.
   if (!result.fromCache) for (const warning of result.warnings) process.stderr.write(`warning: ${warning}\n`);
-  const items = filterItems(result, args, config);
+  const items = filterItems(result, args, config, fileSnoozeStore.load());
 
   if (args.json) {
     if (result.staleReason) process.stderr.write(`warning: stale cache (${result.staleReason})\n`);
