@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -57,6 +57,20 @@ describe("fileSnoozeStore", () => {
       expect(fileSnoozeStore.load()).toEqual({});
       fileSnoozeStore.save(snoozes);
       expect(fileSnoozeStore.load()).toEqual(snoozes);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("ignores non-object JSON in snoozed.json", () => {
+    const dir = mkdtempSync(join(tmpdir(), "gh-prq-snooze-"));
+    try {
+      vi.stubEnv("XDG_CACHE_HOME", dir);
+      mkdirSync(join(dir, "gh-prq"), { recursive: true });
+      for (const content of ["null", "[]", '"bad"']) {
+        writeFileSync(join(dir, "gh-prq", "snoozed.json"), content);
+        expect(fileSnoozeStore.load()).toEqual({});
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

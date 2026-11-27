@@ -53,7 +53,8 @@ const snoozeFile = () => join(cacheDir(), "snoozed.json");
 export const fileSnoozeStore: SnoozeStore = {
   load() {
     try {
-      return JSON.parse(readFileSync(snoozeFile(), "utf8")) as Snoozes;
+      const parsed: unknown = JSON.parse(readFileSync(snoozeFile(), "utf8"));
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Snoozes) : {};
     } catch {
       return {};
     }

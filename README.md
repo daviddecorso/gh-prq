@@ -40,9 +40,9 @@ node src/cli/index.ts --plain
 
 The queue includes open PRs you've only commented on, not just ones you reviewed or were asked to review. A `●` marks PRs that became actionable since the last load (including since your last session), and the header counts them; the mark clears once the cursor moves off the row. When a background refresh turns up new ones, the terminal bell rings.
 
-On your own PRs, `M` merges a ready PR (pick squash, merge or rebase; it uses `gh pr merge --auto`, so branch protection and required checks still apply), `D` marks a draft ready for review, and `R` re-requests review from everyone who reviewed it before and isn't currently requested. Each asks first.
+On your own PRs, `M` merges a ready PR (pick squash, merge or rebase; branch protection and required checks still apply), `D` marks a draft ready for review, and `R` re-requests review from everyone who reviewed it before (excluding active approvers and anyone currently requested). Each asks first.
 
-`z` snoozes the selected PR until something changes: its bucket, its latest activity, or its head commit. Snoozed PRs are hidden from the TUI, `--plain`, `--json` and `--count`. `Z` shows them dimmed in the TUI, and `--all` includes them elsewhere. Snoozes live in `~/.cache/gh-prq/snoozed.json` and expire after 30 days.
+`z` snoozes the selected PR until something changes: its bucket, its latest activity, or its head commit. Snoozed PRs are hidden from the TUI, `--plain`, `--json` and `--count`. `Z` toggles them dimmed in the TUI, and `--all` includes them everywhere (including starting the TUI with snoozed PRs shown). Snoozes live in `~/.cache/gh-prq/snoozed.json` and expire after 30 days.
 
 ## Agent reviews
 

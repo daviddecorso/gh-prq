@@ -36,6 +36,7 @@ function setup(
   showDetailByDefault: "auto" | boolean = false,
   autoRefreshSeconds = 0,
   savedSnoozes: Snoozes = {},
+  initialShowSnoozed = false,
 ) {
   const snoozeStore = { load: vi.fn(() => savedSnoozes), save: vi.fn() };
   const actions: Actions = {
@@ -76,6 +77,7 @@ function setup(
       showDetailByDefault,
       autoRefreshSeconds,
       snoozeStore,
+      initialShowSnoozed,
       onCheckout,
       onHandoff,
       onFix,
@@ -261,6 +263,25 @@ describe("App", () => {
     await press(app, "r");
     expect(app.lastFrame()).toContain("PR PR1");
     expect(app.snoozeStore.save).toHaveBeenLastCalledWith({});
+  });
+
+  test("initialShowSnoozed shows snoozed PRs on startup", async () => {
+    const pr = item("PR1", "NEEDS_REREVIEW");
+    const app = setup(async () => result([pr]), {}, null, {}, 2, [AGENTS.claude], false, 0, { PR1: snoozeEntry(pr) }, true);
+    cleanup = app.unmount;
+    await tick();
+    expect(app.lastFrame()).toMatch(/acme\/api#1 .*\[snoozed\]/);
+  });
+
+  test("hidden snoozed PRs don't inflate the header new count", async () => {
+    const pr1 = item("PR1", "NEEDS_REREVIEW");
+    const pr2 = item("PR2", "NEEDS_INITIAL_REVIEW");
+    const app = setup(async () => result([pr1, pr2]), {}, result([pr1]), {}, 2, [AGENTS.claude], false, 0, { PR2: snoozeEntry(pr2) });
+    cleanup = app.unmount;
+    await tick();
+    expect(app.lastFrame()).not.toContain("●");
+    await press(app, "Z");
+    expect(app.lastFrame()).toContain("● 1 new");
   });
 
   test("space unfolds the bucket under the cursor", async () => {

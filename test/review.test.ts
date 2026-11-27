@@ -474,10 +474,10 @@ describe("posting", () => {
 describe("PR actions", () => {
   const own = item("PR7", "MY_PR_READY", { author: "me", headOid: "abc", pastReviewers: ["bob"] });
 
-  test("merge uses --auto with the chosen method and pins the head commit", async () => {
+  test("merge runs gh pr merge with the chosen method and pins the head commit", async () => {
     const exec = fakeExec([["gh", ["pr", "merge"], ok()]]);
-    expect(await mergePR(own, "rebase", exec)).toContain("Merge requested on acme/api#7");
-    expect(exec).toHaveBeenCalledWith("gh", ["pr", "merge", own.url, "--auto", "--rebase", "--match-head-commit", "abc"]);
+    expect(await mergePR(own, "rebase", exec)).toBe("Merge requested on acme/api#7 (rebase)");
+    expect(exec).toHaveBeenCalledWith("gh", ["pr", "merge", own.url, "--rebase", "--match-head-commit", "abc"]);
   });
 
   test("merge failures surface gh's first error line", async () => {

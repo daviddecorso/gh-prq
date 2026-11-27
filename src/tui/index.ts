@@ -123,6 +123,7 @@ export async function runTui({ config, scope, flags }: RunTuiOptions): Promise<n
         showDetailByDefault: config.ui.showDetailByDefault,
         autoRefreshSeconds: config.ui.autoRefreshSeconds,
         snoozeStore: fileSnoozeStore,
+        initialShowSnoozed: Boolean(flags.all),
         onCheckout: (pr) => {
           after = { kind: "checkout", pr };
         },

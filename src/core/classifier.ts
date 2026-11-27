@@ -61,8 +61,17 @@ export function classifyPR(pr: NormalizedPR, viewer: string, config: Config, opt
     .filter((t) => t.comments.some((c) => c.author === viewer))
     .map(({ path, isOutdated, comments }) => ({ path, isOutdated, comments }));
 
+  const approvedReviewers = new Set(
+    latestDecisiveReviewPerAuthor(reviews)
+      .filter((r) => r.state === "APPROVED")
+      .map((r) => r.author),
+  );
   const pastReviewers = [
-    ...new Set(reviews.map((r) => r.author).filter((a) => a !== viewer && a !== pr.author && !pr.requestedUsers.includes(a))),
+    ...new Set(
+      reviews
+        .map((r) => r.author)
+        .filter((a) => a !== viewer && a !== pr.author && a !== "ghost" && !pr.requestedUsers.includes(a) && !approvedReviewers.has(a)),
+    ),
   ];
 
   const badges: string[] = [];

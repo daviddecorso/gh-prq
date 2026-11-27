@@ -243,14 +243,18 @@ describe("reviewer: approved", () => {
 describe("author", () => {
   const mine = (overrides: Partial<NormalizedPR> = {}) => pr({ author: ME, ...overrides });
 
-  test("pastReviewers excludes me, the author and anyone currently requested", () => {
+  test("pastReviewers excludes me, the author, ghost, active approvers and anyone currently requested", () => {
     const reviews = [
       review("bob", "COMMENTED", 1),
       review("bob", "APPROVED", 2),
       review("carol", "COMMENTED", 1),
-      review("dave", "COMMENTED", 1),
+      review("dave", "CHANGES_REQUESTED", 1),
+      review("erin", "APPROVED", 1),
+      review("erin", "DISMISSED", 2),
+      review("frank", "CHANGES_REQUESTED", 1),
+      review("ghost", "COMMENTED", 1),
     ];
-    expect(classify(mine({ reviews, requestedUsers: ["dave"] }))?.pastReviewers).toEqual(["bob", "carol"]);
+    expect(classify(mine({ reviews, requestedUsers: ["frank"] }))?.pastReviewers).toEqual(["carol", "dave", "erin"]);
   });
 
   test("merge conflicts", () => {

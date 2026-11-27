@@ -69,7 +69,7 @@ const ACTION_HELP_LINES: [string, string][] = [
   ["p", "post draft (works in details too)"],
   ["v", "approve"],
   ["x", "cancel review or discard draft"],
-  ["M", "merge your ready PR (auto-merge)"],
+  ["M", "merge your ready PR"],
   ["D", "mark your draft ready for review"],
   ["R", "re-request past reviewers"],
   ["z", "snooze until new activity (again to wake)"],
@@ -94,6 +94,7 @@ export interface AppProps {
   autoRefreshSeconds: number;
   /** Defaults to an in-memory store that forgets on exit. */
   snoozeStore?: SnoozeStore;
+  initialShowSnoozed?: boolean;
   onCheckout: (pr: ClassifiedPR) => void;
   onHandoff: (pr: ClassifiedPR, agent: Agent) => void;
   onFix: (pr: ClassifiedPR, agent: Agent, feedback: Feedback) => void;
@@ -184,6 +185,7 @@ export function App({
   showDetailByDefault = false,
   autoRefreshSeconds,
   snoozeStore = memorySnoozeStore,
+  initialShowSnoozed = false,
   onCheckout,
   onHandoff,
   onFix,
@@ -247,7 +249,7 @@ export function App({
 
   const allItems = queue.result?.items ?? NO_ITEMS;
   const [snoozes, setSnoozes] = React.useState(() => snoozeStore.load());
-  const [showSnoozed, setShowSnoozed] = React.useState(false);
+  const [showSnoozed, setShowSnoozed] = React.useState(initialShowSnoozed);
   const updateSnoozes = (next: Snoozes) => {
     setSnoozes(next);
     snoozeStore.save(next);
@@ -264,13 +266,17 @@ export function App({
     [allItems, snoozed, showSnoozed],
   );
   const { fresh, markSeen } = queue;
+  const visibleFresh = React.useMemo(
+    () => (showSnoozed || snoozed.size === 0 ? fresh : new Set([...fresh].filter((id) => !snoozed.has(id)))),
+    [fresh, snoozed, showSnoozed],
+  );
   const rows = React.useMemo(
     () =>
       buildRows(items, collapsed, filter, reviews.jobs, (pr) => [
-        ...(fresh.has(pr.id) ? ["is:new"] : []),
+        ...(visibleFresh.has(pr.id) ? ["is:new"] : []),
         ...(snoozed.has(pr.id) ? ["is:snoozed"] : []),
       ]),
-    [items, collapsed, filter, reviews.jobs, fresh, snoozed],
+    [items, collapsed, filter, reviews.jobs, visibleFresh, snoozed],
   );
   const cursor = restoreCursor(selection, rows);
   const current = rows[cursor];
@@ -475,7 +481,7 @@ export function App({
       choices[key] = () => runPRAction(pr, "merging", () => actions.merge(pr, method));
     }
     // Always asks: a merge can't be undone from here.
-    setConfirm({ prompt: `Merge ${ref(pr)} (auto-merge if checks are required): s squash · m merge · r rebase · esc cancel`, choices });
+    setConfirm({ prompt: `Merge ${ref(pr)}: s squash · m merge · r rebase · esc cancel`, choices });
   };
 
   const markOwnReady = (pr: ClassifiedPR) => {
@@ -757,7 +763,7 @@ export function App({
     result
       ? h(Text, { dimColor: true }, `${actionable} actionable · ${waiting} waiting · updated ${relativeTime(result.fetchedAt, now)} ago`)
       : null,
-    fresh.size > 0 ? h(Text, { color: "cyan" }, `  ● ${fresh.size} new`) : null,
+    visibleFresh.size > 0 ? h(Text, { color: "cyan" }, `  ● ${visibleFresh.size} new`) : null,
     snoozed.size > 0 ? h(Text, { dimColor: true }, `  z ${snoozed.size} snoozed${showSnoozed ? "" : " (Z to show)"}`) : null,
     reviews.activeCount > 0 ? h(Text, { color: "magenta" }, `  ${spinner} ${reviews.activeCount} reviewing`) : null,
     readyCount > 0 ? h(Text, { color: "magenta" }, `  ✎ ${readyCount} draft${readyCount === 1 ? "" : "s"}`) : null,
@@ -860,7 +866,7 @@ export function App({
       jobs: reviews.jobs,
       viewer: result.viewer,
       busy,
-      fresh,
+      fresh: visibleFresh,
       snoozed,
       spinner,
     });

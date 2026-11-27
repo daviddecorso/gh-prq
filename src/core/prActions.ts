@@ -5,12 +5,12 @@ export type MergeMethod = "squash" | "merge" | "rebase";
 
 const ref = (pr: ClassifiedPR) => `${pr.repo}#${pr.number}`;
 
-/** `--auto` defers to branch protection: it merges now if allowed, otherwise once required checks and reviews pass. */
+/** Merges via `gh pr merge` without `--admin`, so branch protection and required checks still apply. */
 export async function mergePR(pr: ClassifiedPR, method: MergeMethod, exec: Runner = run): Promise<string> {
-  const res = await exec("gh", ["pr", "merge", pr.url, "--auto", `--${method}`, "--match-head-commit", pr.headOid]);
+  const res = await exec("gh", ["pr", "merge", pr.url, `--${method}`, "--match-head-commit", pr.headOid]);
   if (res.code !== 0) throw new Error(`Merge failed: ${firstErrorLine(res)}`);
-  // Piped, gh prints nothing either way, so we can't tell an immediate merge from an armed auto-merge.
-  return `Merge requested on ${ref(pr)} (${method}; waits for required checks if any)`;
+  // Repos with a merge queue enqueue the PR instead of merging immediately, and piped gh prints nothing either way.
+  return `Merge requested on ${ref(pr)} (${method})`;
 }
 
 export async function markReady(pr: ClassifiedPR, exec: Runner = run): Promise<string> {
