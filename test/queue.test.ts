@@ -1,5 +1,12 @@
 import { describe, expect, test } from "vitest";
+import { buildSearchQueries } from "../src/core/github.ts";
 import { repoMatcher } from "../src/core/queue.ts";
+
+describe("buildSearchQueries", () => {
+  test("covers PRs you only commented on, scoped like the rest", () => {
+    expect(buildSearchQueries({ org: "acme" }).qCommented).toBe("is:open is:pr commenter:@me -author:@me org:acme");
+  });
+});
 
 describe("repoMatcher", () => {
   const matches = (patterns: string[], repo: string) => repoMatcher(patterns)(repo);

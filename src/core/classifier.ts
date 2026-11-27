@@ -203,7 +203,8 @@ export function classifyPR(pr: NormalizedPR, viewer: string, config: Config, opt
     return make("NEEDS_REREVIEW", ["New commits pushed since your review"], pr.latestCommitAt ?? pr.updatedAt, extra);
   }
   if (authorReply && !iApproved) {
-    return make("NEEDS_REREVIEW", [`@${authorReply.author} commented after your review`], authorReply.createdAt, {
+    const after = lastMyReview ? "your review" : "your comment";
+    return make("NEEDS_REREVIEW", [`@${authorReply.author} commented after ${after}`], authorReply.createdAt, {
       ...extra,
       snippet: authorReply,
     });
