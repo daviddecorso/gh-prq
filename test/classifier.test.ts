@@ -182,6 +182,13 @@ describe("reviewer: re-review vs waiting", () => {
     expect(result?.reason).toBe("Waiting on author reply");
   });
 
+  test("top-level comments without a review or request wait on the author until they reply", () => {
+    expect(classify(pr({ comments: [comment(ME, 1)] }))?.reason).toBe("Waiting on author reply");
+    const replied = classify(pr({ comments: [comment(ME, 1), comment("alice", 2)] }));
+    expect(replied?.bucket).toBe("NEEDS_REREVIEW");
+    expect(replied?.reason).toBe("@alice commented after your comment");
+  });
+
   test("pending review doesn't count as reviewed but adds a badge", () => {
     const result = classify(pr({ requestedUsers: [ME], reviews: [review(ME, "PENDING", 1)] }));
     expect(result?.bucket).toBe("NEEDS_INITIAL_REVIEW");
@@ -235,6 +242,20 @@ describe("reviewer: approved", () => {
 
 describe("author", () => {
   const mine = (overrides: Partial<NormalizedPR> = {}) => pr({ author: ME, ...overrides });
+
+  test("pastReviewers excludes me, the author, ghost, active approvers and anyone currently requested", () => {
+    const reviews = [
+      review("bob", "COMMENTED", 1),
+      review("bob", "APPROVED", 2),
+      review("carol", "COMMENTED", 1),
+      review("dave", "CHANGES_REQUESTED", 1),
+      review("erin", "APPROVED", 1),
+      review("erin", "DISMISSED", 2),
+      review("frank", "CHANGES_REQUESTED", 1),
+      review("ghost", "COMMENTED", 1),
+    ];
+    expect(classify(mine({ reviews, requestedUsers: ["frank"] }))?.pastReviewers).toEqual(["carol", "dave", "erin"]);
+  });
 
   test("merge conflicts", () => {
     expect(classify(mine({ mergeable: "CONFLICTING" }))?.reason).toBe("Merge conflicts");

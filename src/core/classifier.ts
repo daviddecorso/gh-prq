@@ -61,6 +61,19 @@ export function classifyPR(pr: NormalizedPR, viewer: string, config: Config, opt
     .filter((t) => t.comments.some((c) => c.author === viewer))
     .map(({ path, isOutdated, comments }) => ({ path, isOutdated, comments }));
 
+  const approvedReviewers = new Set(
+    latestDecisiveReviewPerAuthor(reviews)
+      .filter((r) => r.state === "APPROVED")
+      .map((r) => r.author),
+  );
+  const pastReviewers = [
+    ...new Set(
+      reviews
+        .map((r) => r.author)
+        .filter((a) => a !== viewer && a !== pr.author && a !== "ghost" && !pr.requestedUsers.includes(a) && !approvedReviewers.has(a)),
+    ),
+  ];
+
   const badges: string[] = [];
   if (pr.reviews.some((r) => r.state === "PENDING" && r.author === viewer)) badges.push("draft review");
 
@@ -97,6 +110,7 @@ export function classifyPR(pr: NormalizedPR, viewer: string, config: Config, opt
     commitCount: pr.commitCount ?? pr.commits?.length ?? 0,
     ...(extra.snippet ? { latestReplySnippet: extra.snippet } : {}),
     viewerThreads,
+    pastReviewers,
     badges,
     updatedAt: pr.updatedAt,
     actionSince,
@@ -203,7 +217,8 @@ export function classifyPR(pr: NormalizedPR, viewer: string, config: Config, opt
     return make("NEEDS_REREVIEW", ["New commits pushed since your review"], pr.latestCommitAt ?? pr.updatedAt, extra);
   }
   if (authorReply && !iApproved) {
-    return make("NEEDS_REREVIEW", [`@${authorReply.author} commented after your review`], authorReply.createdAt, {
+    const after = lastMyReview ? "your review" : "your comment";
+    return make("NEEDS_REREVIEW", [`@${authorReply.author} commented after ${after}`], authorReply.createdAt, {
       ...extra,
       snippet: authorReply,
     });

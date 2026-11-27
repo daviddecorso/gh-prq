@@ -7,7 +7,8 @@ export const rowKey = (row: Row): string => (row.kind === "header" ? `h:${row.bu
 
 export const bucketOfRow = (row: Row): BucketId => (row.kind === "header" ? row.bucket : row.pr.bucket);
 
-export function matchesFilter(pr: ClassifiedPR, query: string, job?: ReviewJob): boolean {
+/** `tags` are extra searchable words for state the PR itself doesn't carry, e.g. "is:new". */
+export function matchesFilter(pr: ClassifiedPR, query: string, job?: ReviewJob, tags: readonly string[] = []): boolean {
   const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   if (terms.length === 0) return true;
   const parts = [
@@ -18,6 +19,7 @@ export function matchesFilter(pr: ClassifiedPR, query: string, job?: ReviewJob):
     ...pr.badges,
     `ci:${pr.ciState}`,
     job?.status === "ready" || job?.status === "posting" ? "is:draft" : "",
+    ...tags,
   ];
   const haystack = parts.join(" ").toLowerCase();
   return terms.every((term) => haystack.includes(term));
@@ -29,11 +31,12 @@ export function buildRows(
   collapsed: ReadonlySet<BucketId>,
   query = "",
   jobs?: ReadonlyMap<string, ReviewJob>,
+  tagsFor?: (pr: ClassifiedPR) => readonly string[],
 ): Row[] {
   const filtering = query.trim() !== "";
   const rows: Row[] = [];
   for (const bucket of BUCKET_ORDER) {
-    const prs = items.filter((pr) => pr.bucket === bucket && (!filtering || matchesFilter(pr, query, jobs?.get(pr.id))));
+    const prs = items.filter((pr) => pr.bucket === bucket && (!filtering || matchesFilter(pr, query, jobs?.get(pr.id), tagsFor?.(pr))));
     if (prs.length === 0) continue;
     const isCollapsed = !filtering && collapsed.has(bucket);
     rows.push({ kind: "header", bucket, count: prs.length, collapsed: isCollapsed });
@@ -79,6 +82,15 @@ export function scrollWindow(cursor: number, rowCount: number, height: number, p
 export interface KeyHintOptions {
   showDetail?: boolean;
   detailsOpen?: boolean;
+  viewer?: string;
+}
+
+const isOwnPR = (pr: ClassifiedPR, viewer?: string) => pr.bucket.startsWith("MY_PR") || (viewer != null && pr.author === viewer);
+
+function ownPRHints(pr: ClassifiedPR): string[] {
+  if (pr.bucket === "MY_PR_READY") return ["M merge"];
+  if (pr.bucket === "DRAFTS") return ["D ready"];
+  return pr.pastReviewers.length > 0 ? ["R re-request"] : [];
 }
 
 /** Footer hints for the selected row; `? help` leads so truncation never hides it. */
@@ -86,17 +98,17 @@ export function keyHints(
   row: Row | undefined,
   job: ReviewJob | undefined,
   filterActive: boolean,
-  { showDetail = false, detailsOpen = false }: KeyHintOptions = {},
+  { showDetail = false, detailsOpen = false, viewer }: KeyHintOptions = {},
 ): string {
   if (detailsOpen) {
-    const own = row?.kind === "pr" && row.pr.bucket.startsWith("MY_PR");
+    const own = row?.kind === "pr" && isOwnPR(row.pr, viewer);
     const actions =
       job?.status === "ready"
         ? ["p post", ...(row?.kind === "pr" && job.headOid !== row.pr.headOid ? ["a re-review"] : []), "x discard"]
         : job?.status === "queued" || job?.status === "running"
           ? ["x cancel"]
           : own
-            ? ["f fix comments"]
+            ? [...ownPRHints(row.pr), "f fix comments"]
             : ["a review", "v approve"];
     return ["esc back", "j/k scroll", ...actions, "o open", "y copy"].join("  ");
   }
@@ -110,7 +122,7 @@ export function keyHints(
   else if (job?.status === "ready") {
     middle = ["d read draft", "p post", ...(stale ? ["a re-review"] : []), "x discard", "o open", "i info"];
   } else if (job?.status === "failed") middle = ["a retry", "x clear", "o open", "i info"];
-  else if (row.pr.bucket.startsWith("MY_PR")) middle = ["o open", "f fix comments", "d details", "i info", "c checkout"];
+  else if (isOwnPR(row.pr, viewer)) middle = ["o open", ...ownPRHints(row.pr), "f fix comments", "d details", "i info", "c checkout"];
   else middle = ["o open", "a review", "v approve", "d details", "i info", "c checkout"];
   if (showDetail && row?.kind === "pr") middle = [...middle, "J/K scroll"];
   return ["? help", ...middle, ...tail].join("  ");

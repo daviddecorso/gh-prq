@@ -39,6 +39,7 @@ export function buildSearchQueries(scope: Scope) {
     qAuthored: q("is:open is:pr author:@me"),
     qRequested: q("is:open is:pr review-requested:@me"),
     qInvolved: q("is:open is:pr reviewed-by:@me -author:@me"),
+    qCommented: q("is:open is:pr commenter:@me -author:@me"),
   };
 }
 
@@ -331,8 +332,8 @@ async function mapLimited<T, R>(items: T[], limit: number, fn: (item: T) => Prom
 }
 
 export async function fetchSnapshot(scope: Scope, token = getGhToken()): Promise<QueueSnapshot> {
-  const { qAuthored, qRequested, qInvolved } = buildSearchQueries(scope);
-  const searches = await Promise.all([qAuthored, qRequested, qInvolved].map((q) => searchIds(q, token)));
+  const { qAuthored, qRequested, qInvolved, qCommented } = buildSearchQueries(scope);
+  const searches = await Promise.all([qAuthored, qRequested, qInvolved, qCommented].map((q) => searchIds(q, token)));
   const requestedIds = new Set(searches[1]!.ids);
   const ids = [...new Set(searches.flatMap((s) => s.ids))];
 

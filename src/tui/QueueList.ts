@@ -28,7 +28,10 @@ interface QueueListProps {
   now: number;
   jobs: ReadonlyMap<string, ReviewJob>;
   viewer?: string;
-  approving?: ReadonlySet<string>;
+  /** PR id → in-flight action label, e.g. "approving". */
+  busy?: ReadonlyMap<string, string>;
+  fresh?: ReadonlySet<string>;
+  snoozed?: ReadonlySet<string>;
   spinner?: string;
 }
 
@@ -57,7 +60,7 @@ export function reviewBadge(
   }
 }
 
-export function QueueList({ rows, cursor, start, height, width, now, jobs, viewer, approving, spinner = "◐" }: QueueListProps) {
+export function QueueList({ rows, cursor, start, height, width, now, jobs, viewer, busy, fresh, snoozed, spinner = "◐" }: QueueListProps) {
   const prs = rows.flatMap((r) => (r.kind === "pr" ? [r.pr] : []));
   const refWidth = Math.max(0, ...prs.map((pr) => ref(pr).length));
   const showDiff = width >= SHOW_DIFF_MIN_WIDTH;
@@ -74,7 +77,8 @@ export function QueueList({ rows, cursor, start, height, width, now, jobs, viewe
     { flexDirection: "column", width, height },
     rows.slice(start, start + height).map((row, i) => {
       const selected = start + i === cursor;
-      const pointer = h(Text, { color: "cyan" }, selected ? "›" : " ");
+      const isFresh = row.kind === "pr" && (fresh?.has(row.pr.id) ?? false);
+      const pointer = h(Text, { color: "cyan" }, selected ? "›" : isFresh ? "●" : " ");
 
       if (row.kind === "header") {
         const tone = BUCKET_TONE[row.bucket];
@@ -94,12 +98,13 @@ export function QueueList({ rows, cursor, start, height, width, now, jobs, viewe
 
       const { pr } = row;
       const ci = CI_STYLE[pr.ciState];
-      const isApproving = approving?.has(pr.id) ?? false;
-      const badge = isApproving ? { text: `${spinner} approving…`, color: "green" } : reviewBadge(jobs.get(pr.id), pr, now, spinner);
+      const busyLabel = busy?.get(pr.id);
+      const badge = busyLabel ? { text: `${spinner} ${busyLabel}…`, color: "green" } : reviewBadge(jobs.get(pr.id), pr, now, spinner);
       const authorLabel = pr.author === viewer ? "" : `@${pr.author}`;
+      const isSnoozed = snoozed?.has(pr.id) ?? false;
       return h(
         Text,
-        { key: rowKey(row), wrap: "truncate-end", inverse: selected },
+        { key: rowKey(row), wrap: "truncate-end", inverse: selected, dimColor: isSnoozed && !selected },
         pointer,
         " ",
         h(Text, { bold: selected }, ref(pr).padEnd(refWidth)),
@@ -114,6 +119,7 @@ export function QueueList({ rows, cursor, start, height, width, now, jobs, viewe
         pr.reason,
         h(Text, { dimColor: true }, ` · ${relativeTime(pr.actionSince, now)}`),
         ...pr.badges.map((b) => h(Text, { key: b, color: "cyan" }, ` [${b}]`)),
+        isSnoozed ? h(Text, { dimColor: true }, " [snoozed]") : null,
       );
     }),
   );

@@ -53,4 +53,24 @@ describe("loadConfig agent", () => {
     expect(loadConfig(configFile({ ui: { showDetailByDefault: false } })).ui.showDetailByDefault).toBe(false);
     expect(() => loadConfig(configFile({ ui: { showDetailByDefault: "wide" } }))).toThrow("showDetailByDefault");
   });
+
+  test("maxConcurrent must be a whole number of at least 1", () => {
+    expect(() => loadConfig(configFile({ agent: { maxConcurrent: 0 } }))).toThrow("agent.maxConcurrent");
+    expect(() => loadConfig(configFile({ agent: { maxConcurrent: 1.5 } }))).toThrow("agent.maxConcurrent");
+    expect(() => loadConfig(configFile({ claude: { maxConcurrent: "2" } }))).toThrow("agent.maxConcurrent");
+    expect(loadConfig(configFile({ agent: { maxConcurrent: 3 } })).agent.maxConcurrent).toBe(3);
+  });
+});
+
+describe("loadConfig ui and filters", () => {
+  test("refresh and cache intervals must be non-negative numbers", () => {
+    expect(loadConfig(configFile({ ui: { autoRefreshSeconds: 0 } })).ui.autoRefreshSeconds).toBe(0);
+    expect(() => loadConfig(configFile({ ui: { autoRefreshSeconds: "60" } }))).toThrow("ui.autoRefreshSeconds");
+    expect(() => loadConfig(configFile({ ui: { cacheTtlSeconds: -1 } }))).toThrow("ui.cacheTtlSeconds");
+  });
+
+  test("an invalid ignoredBotPattern is reported at load", () => {
+    expect(() => loadConfig(configFile({ filters: { ignoredBotPattern: "[bot" } }))).toThrow("not a valid regex");
+    expect(loadConfig(configFile({ filters: { ignoredBotPattern: "^ci-" } })).filters.ignoredBotPattern).toBe("^ci-");
+  });
 });

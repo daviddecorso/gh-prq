@@ -108,6 +108,24 @@ export function loadConfig(path = configPath()): Config {
   if (typeof config.ui.showDetailByDefault !== "boolean" && config.ui.showDetailByDefault !== "auto") {
     throw new Error(`Invalid config: ui.showDetailByDefault in ${path} must be "auto", true, or false.`);
   }
+  const { maxConcurrent: concurrency } = config.agent;
+  if (!Number.isInteger(concurrency) || concurrency < 1) {
+    throw new Error(`Invalid config: agent.maxConcurrent in ${path} must be a whole number of at least 1.`);
+  }
+  for (const field of ["cacheTtlSeconds", "autoRefreshSeconds"] as const) {
+    const value: unknown = config.ui[field];
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+      throw new Error(`Invalid config: ui.${field} in ${path} must be a number of at least 0.`);
+    }
+  }
+  if (typeof config.filters.ignoredBotPattern !== "string") {
+    throw new Error(`Invalid config: filters.ignoredBotPattern in ${path} must be a string.`);
+  }
+  try {
+    new RegExp(config.filters.ignoredBotPattern, "i");
+  } catch (err) {
+    throw new Error(`Invalid config: filters.ignoredBotPattern in ${path} is not a valid regex: ${(err as Error).message}`);
+  }
   const list = (value: unknown, field: string) => toStringList(value, `${field} in ${path}`);
   config.filters.ignoredBots = list(config.filters.ignoredBots, "filters.ignoredBots");
   config.filters.mutedTeams = list(config.filters.mutedTeams, "filters.mutedTeams");

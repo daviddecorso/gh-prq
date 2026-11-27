@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { firstErrorLine, run } from "../core/exec.ts";
 import { stripControlChars } from "../core/format.ts";
 import { remoteForRepo } from "../core/git.ts";
+import { type MergeMethod, markReady, mergePR, rerequestReviews } from "../core/prActions.ts";
 import type { Agent } from "../core/review/agents.ts";
 import type { Feedback } from "../core/review/feedback.ts";
 import { approvePR } from "../core/review/post.ts";
@@ -20,6 +21,9 @@ export interface Actions {
   openFiles(pr: ClassifiedPR): void;
   copy(pr: ClassifiedPR): string;
   approve(pr: ClassifiedPR): Promise<string>;
+  merge(pr: ClassifiedPR, method: MergeMethod): Promise<string>;
+  markReady(pr: ClassifiedPR): Promise<string>;
+  rerequestReviews(pr: ClassifiedPR): Promise<string>;
   /** Loads `gh pr view` and inline review comments asynchronously for the in-TUI reader. */
   loadDetails(pr: ClassifiedPR, opts?: LoadDetailsOptions): Promise<string>;
   /** `null` means the PR can be checked out from the current directory. */
@@ -114,6 +118,9 @@ export const defaultActions: Omit<Actions, "loadFeedback"> = {
   },
 
   approve: (pr) => approvePR(pr),
+  merge: (pr, method) => mergePR(pr, method),
+  markReady: (pr) => markReady(pr),
+  rerequestReviews: (pr) => rerequestReviews(pr),
 
   async loadDetails(pr, opts) {
     const [view, comments] = await Promise.all([

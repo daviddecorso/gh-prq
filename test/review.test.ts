@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { DEFAULT_CONFIG } from "../src/core/config.ts";
 import type { RunOptions, RunResult } from "../src/core/exec.ts";
+import { markReady, mergePR, rerequestReviews } from "../src/core/prActions.ts";
 import { AGENTS, ALLOWED_TOOLS, availableAgents, extractJson } from "../src/core/review/agents.ts";
+import { fileDraftStore } from "../src/core/review/drafts.ts";
 import { approvePR, postDraft, toReviewPayload } from "../src/core/review/post.ts";
 import { buildCodeReviewPrompt, buildReviewPrompt } from "../src/core/review/prompt.ts";
 import { agentRun, runHeadlessReview } from "../src/core/review/runner.ts";
@@ -466,5 +468,60 @@ describe("posting", () => {
   test("approve reports a blocking pending review", async () => {
     const exec = fakeExec([["gh", ["api"], fail("User can only have one pending review per pull request (HTTP 422)")]]);
     await expect(approvePR(pr, exec)).rejects.toThrow("pending review on acme/api#7");
+  });
+});
+
+describe("PR actions", () => {
+  const own = item("PR7", "MY_PR_READY", { author: "me", headOid: "abc", pastReviewers: ["bob"] });
+
+  test("merge runs gh pr merge with the chosen method and pins the head commit", async () => {
+    const exec = fakeExec([["gh", ["pr", "merge"], ok()]]);
+    expect(await mergePR(own, "rebase", exec)).toBe("Merge requested on acme/api#7 (rebase)");
+    expect(exec).toHaveBeenCalledWith("gh", ["pr", "merge", own.url, "--rebase", "--match-head-commit", "abc"]);
+  });
+
+  test("merge failures surface gh's first error line", async () => {
+    const exec = fakeExec([["gh", ["pr", "merge"], fail("Pull request is not mergeable\nmore")]]);
+    await expect(mergePR(own, "squash", exec)).rejects.toThrow("Merge failed: Pull request is not mergeable");
+  });
+
+  test("markReady runs gh pr ready", async () => {
+    const exec = fakeExec([["gh", ["pr", "ready"], ok()]]);
+    expect(await markReady(own, exec)).toBe("acme/api#7 is ready for review");
+  });
+
+  test("rerequestReviews posts the past reviewers", async () => {
+    let body: unknown;
+    const exec = fakeExec([
+      [
+        "gh",
+        ["api", "--method", "POST", "repos/acme/api/pulls/7/requested_reviewers"],
+        (_args, opts) => {
+          body = JSON.parse(opts!.input!);
+          return ok("{}");
+        },
+      ],
+    ]);
+    expect(await rerequestReviews(own, exec)).toBe("Re-requested @bob on acme/api#7");
+    expect(body).toEqual({ reviewers: ["bob"] });
+  });
+});
+
+describe("fileDraftStore", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  test("drops and deletes drafts older than 30 days", () => {
+    const cache = tempDir();
+    vi.stubEnv("XDG_CACHE_HOME", cache);
+    const save = (number: number, daysAgo: number) => {
+      const pr = item(`PR${number}`, "NEEDS_INITIAL_REVIEW", { repo: "acme/api", number });
+      const createdAt = new Date(Date.now() - daysAgo * 86_400_000).toISOString();
+      fileDraftStore.save(pr, { prId: pr.id, headOid: pr.headOid, createdAt, draft: DRAFT });
+    };
+    save(1, 29);
+    save(2, 31);
+
+    expect(fileDraftStore.load().map((d) => d.prId)).toEqual(["PR1"]);
+    expect(existsSync(join(cache, "gh-prq", "drafts", "acme__api#2.json"))).toBe(false);
   });
 });

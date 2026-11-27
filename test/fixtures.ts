@@ -23,6 +23,7 @@ export function item(id: string, bucket: BucketId, overrides: Partial<Classified
     commits: [],
     commitCount: 0,
     viewerThreads: [],
+    pastReviewers: [],
     badges: [],
     updatedAt: new Date(NOW).toISOString(),
     actionSince: new Date(NOW).toISOString(),

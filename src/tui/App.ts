@@ -5,13 +5,14 @@ import { displayWidth, relativeTime } from "../core/format.ts";
 import { AGENT_IDS, type Agent } from "../core/review/agents.ts";
 import { type Feedback, feedbackCount } from "../core/review/feedback.ts";
 import { EVENT_FOR_VERDICT, type ReviewEvent } from "../core/review/post.ts";
+import { isSnoozed, pruneSnoozes, type SnoozeStore, type Snoozes, snoozeEntry } from "../core/snooze.ts";
 import { ACTIONABLE_BUCKETS, type BucketId, type ClassifiedPR, type QueueResult, WAITING_BUCKETS } from "../core/types.ts";
 import type { Actions } from "./actions.ts";
 import { buildDetailLines, DetailPane, maxDetailScroll } from "./DetailPane.ts";
 import { buildDetailsViewLines, type DetailsBody, DetailsView } from "./DetailsView.ts";
 import { adjacentHeader, bucketOfRow, buildRows, clampCursor, keyHints, restoreCursor, rowKey, scrollWindow } from "./model.ts";
 import { QueueList } from "./QueueList.ts";
-import { type QueueLoader, useQueue } from "./useQueue.ts";
+import { type OnFresh, type QueueLoader, useQueue } from "./useQueue.ts";
 import { type Reviewer, type ReviewSettled, useReviews } from "./useReviews.ts";
 
 const h = React.createElement;
@@ -49,7 +50,7 @@ const NAV_HELP_LINES: [string, string][] = [
   ["] / [", "next / previous bucket"],
   ["space / tab", "fold or unfold the bucket"],
   ["enter / o", "open in browser (enter folds bucket)"],
-  ["/", "filter (terms, @author, ci:, is:draft)"],
+  ["/", "filter (@who, ci:, is:draft|new|snoozed)"],
   ["i", "toggle the info pane"],
   ["J / K", "scroll the info pane"],
   ["r", "refresh"],
@@ -68,7 +69,17 @@ const ACTION_HELP_LINES: [string, string][] = [
   ["p", "post draft (works in details too)"],
   ["v", "approve"],
   ["x", "cancel review or discard draft"],
+  ["M", "merge your ready PR"],
+  ["D", "mark your draft ready for review"],
+  ["R", "re-request past reviewers"],
+  ["z", "snooze until new activity (again to wake)"],
+  ["Z", "show or hide snoozed PRs"],
 ];
+
+const memorySnoozeStore: SnoozeStore = {
+  load: () => ({}),
+  save: () => {},
+};
 
 export interface AppProps {
   load: QueueLoader;
@@ -81,6 +92,9 @@ export interface AppProps {
   collapseWaitingByDefault: boolean;
   showDetailByDefault?: "auto" | boolean;
   autoRefreshSeconds: number;
+  /** Defaults to an in-memory store that forgets on exit. */
+  snoozeStore?: SnoozeStore;
+  initialShowSnoozed?: boolean;
   onCheckout: (pr: ClassifiedPR) => void;
   onHandoff: (pr: ClassifiedPR, agent: Agent) => void;
   onFix: (pr: ClassifiedPR, agent: Agent, feedback: Feedback) => void;
@@ -170,6 +184,8 @@ export function App({
   collapseWaitingByDefault,
   showDetailByDefault = false,
   autoRefreshSeconds,
+  snoozeStore = memorySnoozeStore,
+  initialShowSnoozed = false,
   onCheckout,
   onHandoff,
   onFix,
@@ -177,8 +193,13 @@ export function App({
 }: AppProps) {
   const { exit } = useApp();
   const { columns, rows: termRows } = useTerminalSize();
-  const queue = useQueue(load, autoRefreshSeconds, initial);
   const { status, info, error } = useStatus();
+  const onFresh: OnFresh = (ids, trigger) => {
+    if (trigger !== "auto") return;
+    actions.bell();
+    info(`${ids.length} new in your queue (● marks them)`);
+  };
+  const queue = useQueue(load, autoRefreshSeconds, initial, onFresh);
   const onReviewSettled: ReviewSettled = (pr, agent, outcome) => {
     actions.bell();
     if (outcome.ok) info(`${agent.label} draft ready for ${ref(pr)} (d to read)`);
@@ -193,8 +214,8 @@ export function App({
   const canSteward = Boolean(onSteward && agents.some((a) => a.id === "claude"));
   const [confirm, setConfirm] = React.useState<Confirm | null>(null);
   const [quitArmed, setQuitArmed] = React.useState(false);
-  const approvingRef = React.useRef(new Set<string>());
-  const [approving, setApproving] = React.useState<ReadonlySet<string>>(() => new Set());
+  const busyRef = React.useRef(new Map<string, string>());
+  const [busy, setBusy] = React.useState<ReadonlyMap<string, string>>(() => new Map());
   const [details, setDetails] = React.useState<DetailsState | null>(null);
   const detailsAbort = React.useRef<AbortController | null>(null);
   const fixingRef = React.useRef<{ prRef: string; controller: AbortController } | null>(null);
@@ -202,7 +223,7 @@ export function App({
 
   const now = useNow(reviews.activeCount > 0);
   const spinner = useSpinner(
-    reviews.activeCount > 0 || queue.refreshing || approving.size > 0 || Boolean(details?.body.loading) || fixing !== null,
+    reviews.activeCount > 0 || queue.refreshing || busy.size > 0 || Boolean(details?.body.loading) || fixing !== null,
   );
 
   React.useEffect(
@@ -226,16 +247,48 @@ export function App({
   const [showHelp, setShowHelp] = React.useState(false);
   const [helpScroll, setHelpScroll] = React.useState(0);
 
-  const items = queue.result?.items ?? NO_ITEMS;
-  const rows = React.useMemo(() => buildRows(items, collapsed, filter, reviews.jobs), [items, collapsed, filter, reviews.jobs]);
+  const allItems = queue.result?.items ?? NO_ITEMS;
+  const [snoozes, setSnoozes] = React.useState(() => snoozeStore.load());
+  const [showSnoozed, setShowSnoozed] = React.useState(initialShowSnoozed);
+  const updateSnoozes = (next: Snoozes) => {
+    setSnoozes(next);
+    snoozeStore.save(next);
+  };
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only new results can invalidate a snooze.
+  React.useEffect(() => {
+    if (!queue.result) return;
+    const pruned = pruneSnoozes(snoozes, allItems);
+    if (Object.keys(pruned).length !== Object.keys(snoozes).length) updateSnoozes(pruned);
+  }, [allItems]);
+  const snoozed = React.useMemo(() => new Set(allItems.filter((pr) => isSnoozed(pr, snoozes)).map((pr) => pr.id)), [allItems, snoozes]);
+  const items = React.useMemo(
+    () => (showSnoozed || snoozed.size === 0 ? allItems : allItems.filter((pr) => !snoozed.has(pr.id))),
+    [allItems, snoozed, showSnoozed],
+  );
+  const { fresh, markSeen } = queue;
+  const visibleFresh = React.useMemo(
+    () => (showSnoozed || snoozed.size === 0 ? fresh : new Set([...fresh].filter((id) => !snoozed.has(id)))),
+    [fresh, snoozed, showSnoozed],
+  );
+  const rows = React.useMemo(
+    () =>
+      buildRows(items, collapsed, filter, reviews.jobs, (pr) => [
+        ...(visibleFresh.has(pr.id) ? ["is:new"] : []),
+        ...(snoozed.has(pr.id) ? ["is:snoozed"] : []),
+      ]),
+    [items, collapsed, filter, reviews.jobs, visibleFresh, snoozed],
+  );
   const cursor = restoreCursor(selection, rows);
   const current = rows[cursor];
   const currentKey = current ? rowKey(current) : null;
+  const currentPRId = current?.kind === "pr" ? current.pr.id : null;
   const currentJob = current?.kind === "pr" ? reviews.jobs.get(current.pr.id) : undefined;
   const filterActive = filter.trim() !== "";
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: resets scroll when the selected PR changes.
   React.useEffect(() => setDetailScroll(0), [currentKey]);
+  // A PR counts as seen once the cursor leaves it, so a fresh row under the startup cursor keeps its marker until you move.
+  React.useEffect(() => () => void (currentPRId && markSeen(currentPRId)), [currentPRId, markSeen]);
 
   const select = (index: number) => {
     const next = clampCursor(index, rows.length);
@@ -303,6 +356,16 @@ export function App({
   const withPR = (fn: (pr: ClassifiedPR) => void) => {
     if (current?.kind === "pr") fn(current.pr);
     else info("Select a PR first");
+  };
+
+  const toggleSnooze = (pr: ClassifiedPR) => {
+    const { [pr.id]: _, ...rest } = snoozes;
+    if (snoozed.has(pr.id)) {
+      updateSnoozes(rest);
+      return info(`Woke ${ref(pr)}`);
+    }
+    updateSnoozes({ ...rest, [pr.id]: snoozeEntry(pr) });
+    info(`Snoozed ${ref(pr)} until new activity${showSnoozed ? "" : " (Z to show)"}`);
   };
 
   const confirmThen = (prompt: string, onYes: () => void) => {
@@ -383,28 +446,70 @@ export function App({
     });
   };
 
-  const approveReview = (pr: ClassifiedPR) => {
-    if (pr.author === queue.result?.viewer) return info("You can't approve your own PR");
-    if (approvingRef.current.has(pr.id)) return info(`Already approving ${ref(pr)}`);
-    // Always asks: an approval is public the moment it lands, unlike a pending review.
+  /** Runs a GitHub-side action on `pr`, showing `label` on its row until it settles, then refreshes. */
+  const runPRAction = (pr: ClassifiedPR, label: string, action: () => Promise<string>) => {
+    busyRef.current.set(pr.id, label);
+    setBusy(new Map(busyRef.current));
+    info(`${label[0]!.toUpperCase()}${label.slice(1)} ${ref(pr)}…`);
+    action()
+      .then((msg) => {
+        info(msg);
+        queue.refresh();
+      })
+      .catch((err: Error) => error(firstLine(err.message)))
+      .finally(() => {
+        busyRef.current.delete(pr.id);
+        setBusy(new Map(busyRef.current));
+      });
+  };
+  const busyGuard = (pr: ClassifiedPR) => {
+    const label = busyRef.current.get(pr.id);
+    return label ? `Already ${label} ${ref(pr)}` : null;
+  };
+  const isOwn = (pr: ClassifiedPR) => pr.author === queue.result?.viewer;
+
+  const mergeOwnPR = (pr: ClassifiedPR) => {
+    if (!isOwn(pr) || pr.bucket !== "MY_PR_READY") return info("M merges your own PRs in Ready to Merge");
+    const guard = busyGuard(pr);
+    if (guard) return info(guard);
+    const choices: Confirm["choices"] = {};
+    for (const [key, method] of [
+      ["s", "squash"],
+      ["m", "merge"],
+      ["r", "rebase"],
+    ] as const) {
+      choices[key] = () => runPRAction(pr, "merging", () => actions.merge(pr, method));
+    }
+    // Always asks: a merge can't be undone from here.
+    setConfirm({ prompt: `Merge ${ref(pr)}: s squash · m merge · r rebase · esc cancel`, choices });
+  };
+
+  const markOwnReady = (pr: ClassifiedPR) => {
+    if (!isOwn(pr) || pr.bucket !== "DRAFTS") return info("D marks your own draft PRs ready for review");
+    const guard = busyGuard(pr);
+    if (guard) return info(guard);
+    setConfirm(yesNo(`Mark ${ref(pr)} ready for review? y/n`, () => runPRAction(pr, "marking ready", () => actions.markReady(pr))));
+  };
+
+  const rerequestOwn = (pr: ClassifiedPR) => {
+    if (!isOwn(pr) || (pr.bucket !== "MY_PR_ACTION_NEEDED" && pr.bucket !== "MY_PR_WAITING")) {
+      return info("R re-requests reviews on your own open PRs");
+    }
+    if (pr.pastReviewers.length === 0) return info(`No past reviewers to re-request on ${ref(pr)}`);
+    const guard = busyGuard(pr);
+    if (guard) return info(guard);
+    const who = pr.pastReviewers.map((r) => `@${r}`).join(", ");
     setConfirm(
-      yesNo(`Approve ${ref(pr)}? y/n`, () => {
-        approvingRef.current.add(pr.id);
-        setApproving(new Set(approvingRef.current));
-        info(`Approving ${ref(pr)}…`);
-        actions
-          .approve(pr)
-          .then((msg) => {
-            info(msg);
-            queue.refresh();
-          })
-          .catch((err: Error) => error(err.message))
-          .finally(() => {
-            approvingRef.current.delete(pr.id);
-            setApproving(new Set(approvingRef.current));
-          });
-      }),
+      yesNo(`Re-request review from ${who} on ${ref(pr)}? y/n`, () => runPRAction(pr, "re-requesting", () => actions.rerequestReviews(pr))),
     );
+  };
+
+  const approveReview = (pr: ClassifiedPR) => {
+    if (isOwn(pr)) return info("You can't approve your own PR");
+    const guard = busyGuard(pr);
+    if (guard) return info(guard);
+    // Always asks: an approval is public the moment it lands, unlike a pending review.
+    setConfirm(yesNo(`Approve ${ref(pr)}? y/n`, () => runPRAction(pr, "approving", () => actions.approve(pr))));
   };
 
   const startSteward = (pr: ClassifiedPR) => {
@@ -542,6 +647,9 @@ export function App({
       if (input === "x") return discardReview(detailsPR);
       if (input === "f") return fixFeedback(detailsPR);
       if (input === "S") return startSteward(detailsPR);
+      if (input === "M") return mergeOwnPR(detailsPR);
+      if (input === "D") return markOwnReady(detailsPR);
+      if (input === "R") return rerequestOwn(detailsPR);
       if (input === "m" && canSwitchAgent) {
         const next = (agentIndex + 1) % agents.length;
         setAgentIndex(next);
@@ -630,6 +738,15 @@ export function App({
     if (input === "p") return withPR(postReview);
     if (input === "v") return withPR(approveReview);
     if (input === "x") return withPR(discardReview);
+    if (input === "M") return withPR(mergeOwnPR);
+    if (input === "D") return withPR(markOwnReady);
+    if (input === "R") return withPR(rerequestOwn);
+    if (input === "z") return withPR(toggleSnooze);
+    if (input === "Z") {
+      const next = !showSnoozed;
+      setShowSnoozed(next);
+      return info(next ? `Showing ${snoozed.size} snoozed` : "Hiding snoozed PRs");
+    }
   });
 
   const result = queue.result;
@@ -646,6 +763,8 @@ export function App({
     result
       ? h(Text, { dimColor: true }, `${actionable} actionable · ${waiting} waiting · updated ${relativeTime(result.fetchedAt, now)} ago`)
       : null,
+    visibleFresh.size > 0 ? h(Text, { color: "cyan" }, `  ● ${visibleFresh.size} new`) : null,
+    snoozed.size > 0 ? h(Text, { dimColor: true }, `  z ${snoozed.size} snoozed${showSnoozed ? "" : " (Z to show)"}`) : null,
     reviews.activeCount > 0 ? h(Text, { color: "magenta" }, `  ${spinner} ${reviews.activeCount} reviewing`) : null,
     readyCount > 0 ? h(Text, { color: "magenta" }, `  ✎ ${readyCount} draft${readyCount === 1 ? "" : "s"}`) : null,
     canSwitchAgent ? h(Text, { color: "magenta" }, `  ⇄ ${activeAgent!.id}`) : null,
@@ -746,7 +865,9 @@ export function App({
       now,
       jobs: reviews.jobs,
       viewer: result.viewer,
-      approving,
+      busy,
+      fresh: visibleFresh,
+      snoozed,
       spinner,
     });
     body = sideDetail
@@ -781,7 +902,11 @@ export function App({
   } else {
     const hintRow = detailsOpen && detailsPR ? ({ kind: "pr", pr: detailsPR } as const) : current;
     const hintJob = detailsOpen ? detailsJob : currentJob;
-    footer = h(Text, { dimColor: true, wrap: "truncate-end" }, keyHints(hintRow, hintJob, filterActive, { showDetail, detailsOpen }));
+    footer = h(
+      Text,
+      { dimColor: true, wrap: "truncate-end" },
+      keyHints(hintRow, hintJob, filterActive, { showDetail, detailsOpen, viewer: result?.viewer }),
+    );
   }
 
   return h(
