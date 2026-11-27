@@ -21,6 +21,7 @@ Usage: gh prq [flags]
   --org <org>        Scope to an organization
   --exclude <glob>   Hide repos matching a name or glob, repeatable ("legacy-*", "acme/*")
   --reviews          Only reviewer buckets
+  --hide-comment-only  Skip PRs you only commented on (never reviewed or requested)
   --mine             Only your own PRs (add --all for your drafts)
   --all              Include PRs you've approved, drafts and snoozed PRs
   --refresh          Bypass the local cache
@@ -39,6 +40,7 @@ function parseFlags() {
         org: { type: "string" },
         exclude: { type: "string", multiple: true },
         reviews: { type: "boolean" },
+        "hide-comment-only": { type: "boolean" },
         mine: { type: "boolean" },
         all: { type: "boolean" },
         refresh: { type: "boolean" },
@@ -65,7 +67,11 @@ async function main(): Promise<number> {
   const baseConfig = loadConfig();
   const config = {
     ...baseConfig,
-    filters: { ...baseConfig.filters, excludeRepos: [...baseConfig.filters.excludeRepos, ...(args.exclude ?? [])] },
+    filters: {
+      ...baseConfig.filters,
+      excludeRepos: [...baseConfig.filters.excludeRepos, ...(args.exclude ?? [])],
+      ...(args["hide-comment-only"] && { includeCommentOnly: false }),
+    },
   };
   const scope = { repo: args.repo === "." ? resolveCurrentRepo() : args.repo, org: args.org };
 

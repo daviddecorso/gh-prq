@@ -189,6 +189,13 @@ describe("reviewer: re-review vs waiting", () => {
     expect(replied?.reason).toBe("@alice commented after your comment");
   });
 
+  test("includeCommentOnly: false drops comment-only PRs but keeps requested and reviewed ones", () => {
+    const off: Config = { ...DEFAULT_CONFIG, filters: { ...DEFAULT_CONFIG.filters, includeCommentOnly: false } };
+    expect(classify(pr({ comments: [comment(ME, 1), comment("alice", 2)] }), undefined, off)).toBeNull();
+    expect(bucketOf(pr({ requestedUsers: [ME], comments: [comment(ME, 1)] }), undefined, off)).toBe("NEEDS_INITIAL_REVIEW");
+    expect(bucketOf(pr({ reviews: [review(ME, "COMMENTED", 1)], comments: [comment("alice", 2)] }), undefined, off)).toBe("NEEDS_REREVIEW");
+  });
+
   test("pending review doesn't count as reviewed but adds a badge", () => {
     const result = classify(pr({ requestedUsers: [ME], reviews: [review(ME, "PENDING", 1)] }));
     expect(result?.bucket).toBe("NEEDS_INITIAL_REVIEW");

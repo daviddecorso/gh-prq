@@ -69,6 +69,12 @@ describe("loadConfig ui and filters", () => {
     expect(() => loadConfig(configFile({ ui: { cacheTtlSeconds: -1 } }))).toThrow("ui.cacheTtlSeconds");
   });
 
+  test("includeCommentOnly defaults on and must be a boolean", () => {
+    expect(loadConfig(configFile({})).filters.includeCommentOnly).toBe(true);
+    expect(loadConfig(configFile({ filters: { includeCommentOnly: false } })).filters.includeCommentOnly).toBe(false);
+    expect(() => loadConfig(configFile({ filters: { includeCommentOnly: "no" } }))).toThrow("filters.includeCommentOnly");
+  });
+
   test("an invalid ignoredBotPattern is reported at load", () => {
     expect(() => loadConfig(configFile({ filters: { ignoredBotPattern: "[bot" } }))).toThrow("not a valid regex");
     expect(loadConfig(configFile({ filters: { ignoredBotPattern: "^ci-" } })).filters.ignoredBotPattern).toBe("^ci-");

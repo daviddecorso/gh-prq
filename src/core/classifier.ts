@@ -184,7 +184,8 @@ export function classifyPR(pr: NormalizedPR, viewer: string, config: Config, opt
       badges.push("team");
       return make("NEEDS_INITIAL_REVIEW", [`Team request (${activeTeams.join(", ")})`], pr.createdAt);
     }
-    if (!lastMyInteractionAt) return null;
+    // Only top-level comments, no review and no request: optional, since you were never asked to review.
+    if (!lastMyInteractionAt || !config.filters.includeCommentOnly) return null;
   }
 
   const threadReply = newest(
